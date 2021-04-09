@@ -1,0 +1,42 @@
+subnet is configured and managed by subnet manager
+sm - centralized, configures hosts
+- assigns ports Local Identifier (LID)
+
+rdma send
+- from one or multiple buffers to one or multiple buffers
+
+work request WR
+- items that the hw should perform
+
+work completion
+- when wr completed, creates Work Completion
+- type, opcode, amount of data, more
+
+work queue
+- contrains WRs
+- scheduled by the hw
+- can be either send or receive queue
+- adding a wr to a wq is called 'posting a wr'
+- ewery wr is 'outstanding' until it ends with WC, while outstanding: one cannot know if it was scheduled or not, send buffers cannot be freed/reused, receive buffers content is undetermined
+
+
+send queue SQ
+- entries - send request SR, specifies:
+  - how data is used, what mem buffers to use, opcode, amount of data
+
+recv queue (RQ)
+- handles incoming msgs
+- receive request RR, specifies mem buffers to be used
+- rq may send data as a response - depends on opcode
+
+queue pair QP
+- unifies both send and receive queues
+- every queue is independent
+- every qp is associated with a partition key P_Key
+
+roles:
+- requester - active side
+- responder - passive side - sends or receives data
+  - may post RR
+  - send ack/nack in reliable transport
+

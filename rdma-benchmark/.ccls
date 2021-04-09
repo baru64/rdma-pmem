@@ -1,0 +1,4 @@
+clang++
+%hpp %cpp -std=c++17
+%compile_commands.json
+-I/home/baru/opt/llvm/include/c++/v1/
