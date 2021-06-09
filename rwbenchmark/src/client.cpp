@@ -463,6 +463,84 @@ int Client::cleanup() {
   return 0;
 }
 
+class ClientWorkerThread {
+  private:
+    Client client_;
+    Statistics statistics_;
+  
+  public:
+    inline static std::atomic<bool> begin;
+    inline static std::atomic<bool> quit;
+    int worker_id;
+    int block_size;
+
+    ClientWorkerThread(
+        int thread_id, int block_size, std::string server_addr, std::string server_port
+    )
+      : worker_id(thread_id), client_(server_addr, server_port),
+        statistics_(thread_id), block_size(block_size)
+    {
+    }
+
+    int init(std::string data) {
+        
+      int ret = client_.set_src(data);
+      if (ret) {
+        std::cerr << "Failed to set source buffer, ret = " << ret << std::endl;
+        return ret;
+      }
+      ret = client_.alloc_dst(data);
+      if (ret) {
+        std::cerr << "Failed to alloc dst buffer, ret = " << ret << std::endl;
+        return ret;
+      }
+      ret = client_.init();
+      if (ret) {
+        std::cerr << "Failed to initialise client, ret = " << ret << std::endl;
+        return ret;
+      }
+      ret = client_.exchange_metadata_with_server();
+      if (ret) {
+        std::cerr << "Failed to exchange metadata, ret = " << ret << std::endl;
+      }
+      return ret;
+    }
+
+    // thread main
+    void operator()() {
+      int ret = client_.send_write();
+      if (ret) {
+        std::cerr << "Failed to write, ret = " << ret << std::endl;
+        return;
+      }
+      ret = client_.send_read();
+      if (ret) {
+        std::cerr << "Failed to read, ret = " << ret << std::endl;
+        return;
+      }
+      ret = client_.cmp_data();
+      if (ret) {
+        std::cerr << "Buffers are not equal, ret = " << ret << std::endl;
+      } else {
+        std::cout << "BUFFERS ARE EQUAL!" << std::endl;
+      }
+      ret = client_.cleanup();
+      if (ret) {
+        std::cerr << "Failed to disconnect and clean up, ret =" << ret
+                  << std::endl;
+        return;
+      }
+    }
+};
+
+// TODO
+// najpierw test zwykłego klienta z nowym serwerem
+// następnie test tego klienta z nowym serwerem
+// dodać statystyki
+// dodac zamek lub odstęp do startu wątków
+// test wielu wątków
+
+
 int main(int argc, char *argv[]) {
   std::string server_addr = "127.0.0.1";
   std::string server_port = "2000";
@@ -492,44 +570,43 @@ int main(int argc, char *argv[]) {
     }
   }
   std::cout << server_addr << " " << server_port << std::endl;
-  auto client = new Client(server_addr, server_port);
-  int ret = 0;
-  ret = client->set_src(data);
-  ret = client->alloc_dst(data);
-  if (ret) {
-    std::cerr << "Failed to set source buffer, ret = " << ret << std::endl;
-    return ret;
-  }
-  ret = client->init();
-  if (ret) {
-    std::cerr << "Failed to initialise client, ret = " << ret << std::endl;
-    return ret;
-  }
-  ret = client->exchange_metadata_with_server();
-  if (ret) {
-    std::cerr << "Failed to exchange metadata, ret = " << ret << std::endl;
-    return ret;
-  }
-  ret = client->send_write();
-  if (ret) {
-    std::cerr << "Failed to write, ret = " << ret << std::endl;
-    return ret;
-  }
-  ret = client->send_read();
-  if (ret) {
-    std::cerr << "Failed to read, ret = " << ret << std::endl;
-    return ret;
-  }
-  ret = client->cmp_data();
-  if (ret) {
-    std::cerr << "Buffers are not equal, ret = " << ret << std::endl;
-  } else {
-    std::cout << "BUFFERS ARE EQUAL!!" << std::endl;
-  }
-  ret = client->cleanup();
-  if (ret) {
-    std::cerr << "Failed to disconnect and clean up, ret =" << ret << std::endl;
-    return ret;
-  }
+//  auto client = new Client(server_addr, server_port);
+//  int ret = 0;
+//  ret = client->set_src(data);
+//  ret = client->alloc_dst(data);
+//  if (ret) {
+//    std::cerr << "Failed to set source buffer, ret = " << ret << std::endl;
+//    return ret;
+//  }
+//  ret = client->init();
+//  if (ret) {
+//    std::cerr << "Failed to initialise client, ret = " << ret << std::endl;
+//    return ret;
+//  }
+//  ret = client->exchange_metadata_with_server();
+//  if (ret) {
+//    std::cerr << "Failed to exchange metadata, ret = " << ret << std::endl;
+//    return ret;
+//  }
+//  ret = client->send_write();
+//  if (ret) {
+//    std::cerr << "Failed to write, ret = " << ret << std::endl;
+//    return ret;
+//  }
+//  ret = client->send_read();
+//  if (ret) {
+//    std::cerr << "Failed to read, ret = " << ret << std::endl;
+//    return ret;
+//  }
+//  if (ret) {
+//    std::cerr << "Buffers are not equal, ret = " << ret << std::endl;
+//  } else {
+//    std::cout << "BUFFERS ARE EQUAL!!" << std::endl;
+//  }
+//  ret = client->cleanup();
+//  if (ret) {
+//    std::cerr << "Failed to disconnect and clean up, ret =" << ret << std::endl;
+//    return ret;
+//  }
   return 0;
 }

@@ -1,0 +1,21 @@
+- write + read pmem vs non-pmem
+    najpierw zapis a później odczyt żeby upewnić się że jest utrwalone
+- write + send addr to flush
+    najpierw zapis a później wysyłamy info jakie adresy mają zostać flushowane
+    może być wiele adresów do flushowania struct{ addr, len }
+- write with immediate
+    w immediate wysyłamy identyfikator bufora, po stronie serwera flush,
+    nie wymaga dodatkowego send
+- read vs read pmem
+    porównanie prędkości odczytu z pmem i ramu
+- write vs write pmem
+    porównanie prędkości zapisu do pmem i ramu
+- verb do pmem poszukać
+    podobno coś w tym brighttalku mówili o tym
+
+- to samo ale z wieloma równoległymi połączeniami
+
+zmierzyć dużo takich interwałów
+a później statystyki:
+odchylenie standardowe
+percentyle max min
