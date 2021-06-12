@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <cstring>
 
+#include <getopt.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -371,6 +372,34 @@ int ClientSession::exchange_metadata() {
 }
 
 int ClientSession::teardown() {
+  rdma_destroy_qp(cm_client_id);
+  int ret = rdma_destroy_id(cm_client_id);
+  if (ret) {
+    std::fprintf(stderr, "Failed to destroy client id cleanly, %d \n", -errno);
+  }
+  ret = ibv_destroy_cq(cq);
+  if (ret) {
+    std::fprintf(stderr, "Failed to destroy completion queue cleanly, %d \n",
+                 -errno);
+  }
+  ret = ibv_destroy_comp_channel(io_completion_channel);
+  if (ret) {
+    std::fprintf(stderr, "Failed to destroy completion channel cleanly, %d \n",
+                 -errno);
+  }
+  void* to_free = server_buffer_mr->addr;
+  ibv_dereg_mr(server_buffer_mr);
+  free(to_free);
+  ibv_dereg_mr(server_metadata_mr);
+  ibv_dereg_mr(client_metadata_mr);
+  /* Destroy protection domain */
+  ret = ibv_dealloc_pd(pd);
+  if (ret) {
+    std::fprintf(stderr,
+                 "Failed to destroy client protection domain cleanly, %d \n",
+                 -errno);
+  }
+  std::puts("Client session teardown is complete");
   return 0;
 }
 
@@ -391,8 +420,6 @@ public:
   int run(); // server loop
   int teardown();
 private:
-  // TODO hashmap zamiast vectora
-  //std::vector<std::unique_ptr<ClientSession>> sessions;
   std::unordered_map<int, std::unique_ptr<ClientSession>> sessions;
   int handle_connect_request(struct rdma_cm_event *event);
   int handle_connection_established(struct rdma_cm_event *event);
@@ -470,11 +497,23 @@ int Server::handle_connection_established(struct rdma_cm_event *event) {
 }
 
 int Server::handle_disconnect(struct rdma_cm_event *event) {
+  std::printf("A disconnect event is received from the client\n");
+  int ret = rdma_ack_cm_event(event);
+  if (ret) {
+    std::fprintf(stderr, "Failed to acknowledge the cm event %d\n", -errno);
+    return -errno;
+  }
+  ret = sessions[*(int*)event->id->context]->teardown();
+  if (ret) {
+    std::cerr << "Session teardown error: " << ret << std::endl;
+    return ret;
+  }
+  sessions.erase(*(int*)event->id->context);
   return 0;
 }
 
 int Server::run() {
-  int ret = -1;
+  int ret = 0;
   // sockaddr structure for binding the connection manager
   memset(&(server_sockaddr), 0, sizeof this->server_sockaddr);
   server_sockaddr.sin_family = AF_INET;
@@ -560,6 +599,36 @@ int Server::run() {
   return ret;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+  std::string server_addr;
+  std::string server_port;
+  option opts[]{{"serveraddr", required_argument, nullptr, 'a'},
+                {"serverport", required_argument, nullptr, 'p'},
+                {/**/}};
+  char c;
+  while (-1 != (c = getopt_long(argc, argv, "a:p:", opts, nullptr))) {
+    switch (c) {
+    case 'a':
+      server_addr = optarg;
+      break;
+    case 'p':
+      server_port = optarg;
+      break;
+    default:
+      std::puts("Supported options:");
+      for (option *o = opts; o->name != nullptr; ++o)
+        std::printf(" -%c --%s\n", o->val, o->name);
+      return 0;
+    }
+  }
+  std::cout << "server starts" << std::endl;
+  std::cout << server_addr << " " << server_port << std::endl;
+  auto server = new Server(server_addr, server_port);
+  int ret = 0;
+  ret = server->run();
+  if (ret) {
+    std::cerr << "Server error, ret = " << ret << std::endl;
+    return ret;
+  }
   return 0;
 }

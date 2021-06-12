@@ -13,7 +13,10 @@
 - verb do pmem poszukać
     podobno coś w tym brighttalku mówili o tym
 
+- współdzielenie regionów?
+
 - to samo ale z wieloma równoległymi połączeniami
+- jak rozmiar wpływa na latency i throughput
 
 zmierzyć dużo takich interwałów
 a później statystyki:

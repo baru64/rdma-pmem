@@ -2,6 +2,8 @@
 #include <getopt.h>
 #include <iostream>
 #include <string>
+#include <vector>
+#include <thread>
 
 #include "common.hpp"
 
@@ -469,8 +471,8 @@ class ClientWorkerThread {
     Statistics statistics_;
   
   public:
-    inline static std::atomic<bool> begin;
-    inline static std::atomic<bool> quit;
+    static std::atomic<bool> begin;
+    static std::atomic<bool> quit;
     int worker_id;
     int block_size;
 
@@ -483,7 +485,6 @@ class ClientWorkerThread {
     }
 
     int init(std::string data) {
-        
       int ret = client_.set_src(data);
       if (ret) {
         std::cerr << "Failed to set source buffer, ret = " << ret << std::endl;
@@ -570,43 +571,25 @@ int main(int argc, char *argv[]) {
     }
   }
   std::cout << server_addr << " " << server_port << std::endl;
-//  auto client = new Client(server_addr, server_port);
-//  int ret = 0;
-//  ret = client->set_src(data);
-//  ret = client->alloc_dst(data);
-//  if (ret) {
-//    std::cerr << "Failed to set source buffer, ret = " << ret << std::endl;
-//    return ret;
-//  }
-//  ret = client->init();
-//  if (ret) {
-//    std::cerr << "Failed to initialise client, ret = " << ret << std::endl;
-//    return ret;
-//  }
-//  ret = client->exchange_metadata_with_server();
-//  if (ret) {
-//    std::cerr << "Failed to exchange metadata, ret = " << ret << std::endl;
-//    return ret;
-//  }
-//  ret = client->send_write();
-//  if (ret) {
-//    std::cerr << "Failed to write, ret = " << ret << std::endl;
-//    return ret;
-//  }
-//  ret = client->send_read();
-//  if (ret) {
-//    std::cerr << "Failed to read, ret = " << ret << std::endl;
-//    return ret;
-//  }
-//  if (ret) {
-//    std::cerr << "Buffers are not equal, ret = " << ret << std::endl;
-//  } else {
-//    std::cout << "BUFFERS ARE EQUAL!!" << std::endl;
-//  }
-//  ret = client->cleanup();
-//  if (ret) {
-//    std::cerr << "Failed to disconnect and clean up, ret =" << ret << std::endl;
-//    return ret;
-//  }
+  std::vector<std::unique_ptr<ClientWorkerThread>> workers;
+  std::vector<std::thread> threads;
+  int threads_num = 1;
+
+  for (int i = 0; i < threads_num; ++i)
+    workers.emplace_back(
+      std::make_unique<ClientWorkerThread>(i, 2048, server_addr, server_port)
+    );
+
+  for (int i = 0; i < threads_num; ++i)
+      workers[i]->init(data);
+
+  for (int i = 0; i < threads_num; ++i)
+    threads.emplace_back(std::ref(*workers[i]));
+
+  // TODO when all workers are connected set begin
+  
+  for (int i = 0; i < threads_num; ++i)
+    threads[i].join();
+
   return 0;
 }

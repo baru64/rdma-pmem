@@ -2,12 +2,13 @@ client                          |  server
                                 |  setup cm
                                 |  listen()
 connect()                       |
-                                |  recv connect
+                                |  recv connect event
                                 |  set up client rdma resources (pd, cm_id, cq etc)
                                 |  post recv (for client metadata)
                                 |   metadata = address, length, r/l key
 post recv (for server metadata) |
 post send metadata
+                                |  accept()
                                 |  recv client metadata
                                 |  set up memory region for client operations
                                 |  post send metadata (about mr)

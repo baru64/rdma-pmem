@@ -5,6 +5,7 @@
 #include <iostream>
 #include <thread>
 #include <atomic>
+#include <cstring>
 
 #include <arpa/inet.h>
 #include <netdb.h>
