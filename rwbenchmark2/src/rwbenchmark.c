@@ -6,18 +6,41 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <getopt.h>
+#include <time.h>
 
 #include <rdma/rdma_cma.h>
 #include "common.h"
 
+struct __attribute((packed)) rdma_buffer_attr {
+  uint64_t address;
+  uint32_t length;
+  union key {
+    /* if we send, we call it local key */
+    uint32_t local_key;
+    /* if we receive, we call it remote key */
+    uint32_t remote_key;
+  } key;
+};
+
+struct statistics {
+    uint64_t ops;
+    uint64_t latency;
+    uint64_t last_latency;
+    uint64_t jitter;
+    uint64_t elapsed_nanoseconds;
+};
+
 struct benchmark_node {
-	int			id;
-	struct rdma_cm_id	*cma_id;
-	int			connected;
-	struct ibv_pd		*pd;
-	struct ibv_cq		*cq[2];
-	struct ibv_mr		*mr;
-	void			*mem;
+	int						id;
+	struct rdma_cm_id		*cma_id;
+	int						connected;
+	struct ibv_pd			*pd;
+	struct ibv_cq			*cq[2];
+	struct ibv_mr			*mr;
+	struct ibv_mr			*server_metadata_mr;
+	struct statistics		*stats;
+	struct rdma_buffer_attr *server_metadata;
+	void					*mem;
 };
 
 enum CQ_INDEX {
@@ -42,12 +65,17 @@ static int message_count = 10;
 static const char *port = "7471";
 static uint8_t set_tos = 0;
 static uint8_t tos;
-static uint8_t migrate = 0;
 static char *dst_addr;
 static char *src_addr;
 static struct rdma_addrinfo hints;
 static uint8_t set_timeout;
 static uint8_t timeout;
+
+uint64_t get_time_ns() {
+    struct timespec spec;
+    clock_gettime(CLOCK_REALTIME, &spec);
+    return (uint64_t) spec.tv_sec * (1000 * 1000 * 1000) + (uint64_t) spec.tv_nsec;
+}
 
 static int create_message(struct benchmark_node *node)
 {
@@ -63,14 +91,40 @@ static int create_message(struct benchmark_node *node)
 		return -1;
 	}
 	node->mr = ibv_reg_mr(node->pd, node->mem, message_size,
-			     IBV_ACCESS_LOCAL_WRITE);
+			     (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE));
 	if (!node->mr) {
 		printf("failed to reg MR\n");
 		goto err;
 	}
+
 	return 0;
 err:
 	free(node->mem);
+	return -1;
+}
+
+static void server_set_metadata(struct benchmark_node* node)
+{
+	node->server_metadata->address = (uint64_t) node->mr->addr;
+	node->server_metadata->length = (uint64_t) node->mr->length;
+	node->server_metadata->key.local_key = (uint64_t) node->mr->lkey;
+}
+
+static int create_metadata(struct benchmark_node *node) {
+	size_t metadata_size = sizeof(struct benchmark_node);
+	node->server_metadata = malloc(metadata_size);
+	if (!node->server_metadata) {
+		printf("failed server_metadata allocation\n");
+		return -1;
+	}
+	node->server_metadata_mr = ibv_reg_mr(node->pd, node->server_metadata,
+										  metadata_size, IBV_ACCESS_LOCAL_WRITE);
+	if (!node->server_metadata_mr) {
+		printf("failed to reg server_metadata_mr\n");
+		goto err;
+	}
+err:
+	free(node->server_metadata);
 	return -1;
 }
 
@@ -78,6 +132,13 @@ static int init_node(struct benchmark_node *node)
 {
 	struct ibv_qp_init_attr init_qp_attr;
 	int cqe, ret;
+
+	node->stats = calloc(sizeof(struct statistics), 1);
+	if (!node->stats) {
+		ret = -ENOMEM;
+		printf("rwbenchmark: unable to allocate statistics errno: %d", errno);
+		goto out;
+	}
 
 	node->pd = ibv_alloc_pd(node->cma_id->verbs);
 	if (!node->pd) {
@@ -111,12 +172,21 @@ static int init_node(struct benchmark_node *node)
 		goto out;
 	}
 
+	// allocate metadata buffer and mr
+	ret = create_metadata(node);
+	if (ret) {
+		printf("rwbenchmark: failed to create metadata buffer: %d\n", ret);
+		goto out;
+	}
+
+	// allocate buffer and create message MR
 	ret = create_message(node);
 	if (ret) {
 		printf("rwbenchmark: failed to create messages: %d\n", ret);
 		goto out;
 	}
 out:
+	free(node->stats);
 	return ret;
 }
 
@@ -148,6 +218,28 @@ static int post_recvs(struct benchmark_node *node)
 	return ret;
 }
 
+static int post_recv_metadata(struct benchmark_node *node) {
+	struct ibv_recv_wr recv_wr, *recv_failure;
+	struct ibv_sge sge;
+	int ret = 0;
+
+	recv_wr.next = NULL;
+	recv_wr.sg_list = &sge;
+	recv_wr.num_sge = 1;
+	recv_wr.wr_id = (uintptr_t) node;
+
+	sge.length = sizeof(struct rdma_buffer_attr);
+	sge.lkey = node->server_metadata_mr->lkey;
+	sge.addr = (uintptr_t) node->server_metadata;
+
+	ret = ibv_post_recv(node->cma_id->qp, &recv_wr, &recv_failure);
+	if (ret) {
+		printf("failed to post receive metadata: %d\n", ret);
+	}
+	
+	return ret;
+}
+
 static int post_sends(struct benchmark_node *node)
 {
 	struct ibv_send_wr send_wr, *bad_send_wr;
@@ -176,6 +268,32 @@ static int post_sends(struct benchmark_node *node)
 	return ret;
 }
 
+static int post_send_metadata(struct benchmark_node *node)
+{
+	struct ibv_send_wr send_wr, *bad_send_wr;
+	struct ibv_sge sge;
+	int i, ret = 0;
+
+	if (!node->connected)
+		return 0;
+	
+	send_wr.next = NULL;
+	send_wr.sg_list = &sge;
+	send_wr.num_sge = 1;
+	send_wr.opcode = IBV_WR_SEND;
+	send_wr.send_flags = 0;
+	send_wr.wr_id = (unsigned long)node;
+
+	sge.length = message_size;
+	sge.lkey = node->server_metadata_mr->lkey;
+	sge.addr = (uintptr_t) node->server_metadata;
+
+	ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
+	if (ret) 
+		printf("failed to post send metadata: %d\n", ret);
+	return ret;
+}
+
 static void connect_error(void)
 {
 	test.connects_left--;
@@ -191,13 +309,6 @@ static int addr_handler(struct benchmark_node *node)
 		if (ret)
 			perror("rwbenchmark: set TOS option failed");
 	}
-//	if (set_timeout) {
-//		ret = rdma_set_option(node->cma_id, RDMA_OPTION_ID,
-//				      RDMA_OPTION_ID_ACK_TIMEOUT,
-//				      &timeout, sizeof(timeout));
-//		if (ret)
-//			perror("rwbenchmark: set ack timeout option failed");
-//	}
 	ret = rdma_resolve_route(node->cma_id, 2000);
 	if (ret) {
 		perror("rwbenchmark: resolve route failed");
@@ -206,6 +317,7 @@ static int addr_handler(struct benchmark_node *node)
 	return ret;
 }
 
+// client event
 static int route_handler(struct benchmark_node *node)
 {
 	struct rdma_conn_param conn_param;
@@ -215,6 +327,7 @@ static int route_handler(struct benchmark_node *node)
 	if (ret)
 		goto err;
 
+	// todo post recv metadata
 	ret = post_recvs(node);
 	if (ret)
 		goto err;
@@ -236,6 +349,7 @@ err:
 	return ret;
 }
 
+// server event
 static int connect_handler(struct rdma_cm_id *cma_id)
 {
 	struct benchmark_node *node;
@@ -254,16 +368,10 @@ static int connect_handler(struct rdma_cm_id *cma_id)
 	if (ret)
 		goto err2;
 
-//	if (set_timeout) {
-//		ret = rdma_set_option(node->cma_id, RDMA_OPTION_ID,
-//				      RDMA_OPTION_ID_ACK_TIMEOUT,
-//				      &timeout, sizeof(timeout));
-//		if (ret)
-//			perror("rwbenchmark: set ack timeout option failed");
-//	}
-	ret = post_recvs(node);
-	if (ret)
-		goto err2;
+	// todo remove this
+	// ret = post_recvs(node);
+	// if (ret)
+	// 	goto err2;
 
 	ret = rdma_accept(node->cma_id, NULL);
 	if (ret) {
@@ -446,35 +554,6 @@ static int disconnect_events(void)
 	return ret;
 }
 
-static int migrate_channel(struct rdma_cm_id *listen_id)
-{
-	struct rdma_event_channel *channel;
-	int i, ret;
-
-	printf("migrating to new event channel\n");
-
-	channel = rdma_create_event_channel();
-	if (!channel) {
-		perror("rwbenchmark: failed to create event channel");
-		return -1;
-	}
-
-	ret = 0;
-	if (listen_id)
-		ret = rdma_migrate_id(listen_id, channel);
-
-	for (i = 0; i < connections && !ret; i++)
-		ret = rdma_migrate_id(test.nodes[i].cma_id, channel);
-
-	if (!ret) {
-		rdma_destroy_event_channel(test.channel);
-		test.channel = channel;
-	} else
-		perror("rwbenchmark: failure migrating to channel");
-
-	return ret;
-}
-
 static int run_server(void)
 {
 	struct rdma_cm_id *listen_id;
@@ -510,9 +589,10 @@ static int run_server(void)
 		goto out;
 
 	if (message_count) {
-		printf("initiating data transfers\n");
+		printf("exchanging metadata\n");
 		for (i = 0; i < connections; i++) {
-			ret = post_sends(&test.nodes[i]);
+			server_set_metadata(&test.nodes[i]);
+			ret = post_send_metadata(&test.nodes[i]);
 			if (ret)
 				goto out;
 		}
@@ -521,29 +601,25 @@ static int run_server(void)
 		ret = poll_cqs(SEND_CQ_INDEX);
 		if (ret)
 			goto out;
+		
+		printf("metadata sent\n");
 
-		printf("receiving data transfers\n");
-		ret = poll_cqs(RECV_CQ_INDEX);
-		if (ret)
-			goto out;
-		printf("data transfers complete\n");
+		// printf("receiving data transfers\n");
+		// ret = poll_cqs(RECV_CQ_INDEX);
+		// if (ret)
+		// 	goto out;
+		// printf("data transfers complete\n");
 
 	}
 
-	if (migrate) {
-		ret = migrate_channel(listen_id);
-		if (ret)
-			goto out;
-	}
+	// printf("rwbenchmark: disconnecting\n");
+	// for (i = 0; i < connections; i++) {
+	// 	if (!test.nodes[i].connected)
+	// 		continue;
 
-	printf("rwbenchmark: disconnecting\n");
-	for (i = 0; i < connections; i++) {
-		if (!test.nodes[i].connected)
-			continue;
-
-		test.nodes[i].connected = 0;
-		rdma_disconnect(test.nodes[i].cma_id);
-	}
+	// 	test.nodes[i].connected = 0;
+	// 	rdma_disconnect(test.nodes[i].cma_id);
+	// }
 
 	ret = disconnect_events();
 
@@ -581,6 +657,12 @@ static int run_client(void)
 	if (ret)
 		goto disc;
 
+    // zamiast tego odpalamy thready
+    // każdy thread odbiera najpierw dane MR, (albo nic nie robi przy send) 
+    // następnie robi w pętli:
+    // - post, poll
+    // - X razy post, poll wszystkiego
+    // na końcu wypisuje podsumowanie
 	if (message_count) {
 		printf("receiving data transfers\n");
 		ret = poll_cqs(RECV_CQ_INDEX);
@@ -601,18 +683,17 @@ static int run_client(void)
 	}
 
 	ret = 0;
-
-	if (migrate) {
-		ret = migrate_channel(NULL);
-		if (ret)
-			goto out;
-	}
 disc:
 	ret2 = disconnect_events();
 	if (ret2)
 		ret = ret2;
 out:
 	return ret;
+}
+
+void worker()
+{
+    // Todo
 }
 
 int main(int argc, char **argv)
@@ -660,9 +741,6 @@ int main(int argc, char **argv)
 			break;
 		case 'p':
 			port = optarg;
-			break;
-		case 'm':
-			migrate = 1;
 			break;
 		case 'a':
 			set_timeout = 1;
