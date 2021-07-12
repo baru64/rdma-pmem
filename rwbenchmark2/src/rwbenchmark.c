@@ -61,7 +61,7 @@ struct benchmark {
 static struct benchmark test;
 static int connections = 1;
 static int message_size = 100;
-static int message_count = 10;
+static int message_count = 1;
 static const char *port = "7471";
 static uint8_t set_tos = 0;
 static uint8_t tos;
@@ -70,11 +70,19 @@ static char *src_addr;
 static struct rdma_addrinfo hints;
 static uint8_t set_timeout;
 static uint8_t timeout;
+size_t metadata_size = sizeof(struct rdma_buffer_attr);
 
 uint64_t get_time_ns() {
     struct timespec spec;
     clock_gettime(CLOCK_REALTIME, &spec);
     return (uint64_t) spec.tv_sec * (1000 * 1000 * 1000) + (uint64_t) spec.tv_nsec;
+}
+
+static void print_metadata(struct benchmark_node* node) {
+	printf("Server addr:len:key for node %d > %lu:%u:%u\n", node->id,
+		node->server_metadata->address,
+		node->server_metadata->length,
+		node->server_metadata->key.local_key);
 }
 
 static int create_message(struct benchmark_node *node)
@@ -106,13 +114,13 @@ err:
 static void server_set_metadata(struct benchmark_node* node)
 {
 	node->server_metadata->address = (uint64_t) node->mr->addr;
-	node->server_metadata->length = (uint64_t) node->mr->length;
-	node->server_metadata->key.local_key = (uint64_t) node->mr->lkey;
+	node->server_metadata->length = node->mr->length;
+	node->server_metadata->key.local_key = node->mr->lkey;
+	print_metadata(node);
 }
 
 static int create_metadata(struct benchmark_node *node) {
-	size_t metadata_size = sizeof(struct benchmark_node);
-	node->server_metadata = malloc(metadata_size);
+	node->server_metadata = calloc(metadata_size, 1);
 	if (!node->server_metadata) {
 		printf("failed server_metadata allocation\n");
 		return -1;
@@ -123,6 +131,8 @@ static int create_metadata(struct benchmark_node *node) {
 		printf("failed to reg server_metadata_mr\n");
 		goto err;
 	}
+
+	return 0;
 err:
 	free(node->server_metadata);
 	return -1;
@@ -179,6 +189,8 @@ static int init_node(struct benchmark_node *node)
 		goto out;
 	}
 
+	print_metadata(node);
+
 	// allocate buffer and create message MR
 	ret = create_message(node);
 	if (ret) {
@@ -228,7 +240,7 @@ static int post_recv_metadata(struct benchmark_node *node) {
 	recv_wr.num_sge = 1;
 	recv_wr.wr_id = (uintptr_t) node;
 
-	sge.length = sizeof(struct rdma_buffer_attr);
+	sge.length = metadata_size;
 	sge.lkey = node->server_metadata_mr->lkey;
 	sge.addr = (uintptr_t) node->server_metadata;
 
@@ -284,7 +296,7 @@ static int post_send_metadata(struct benchmark_node *node)
 	send_wr.send_flags = 0;
 	send_wr.wr_id = (unsigned long)node;
 
-	sge.length = message_size;
+	sge.length = metadata_size;
 	sge.lkey = node->server_metadata_mr->lkey;
 	sge.addr = (uintptr_t) node->server_metadata;
 
@@ -327,8 +339,7 @@ static int route_handler(struct benchmark_node *node)
 	if (ret)
 		goto err;
 
-	// todo post recv metadata
-	ret = post_recvs(node);
+	ret = post_recv_metadata(node);
 	if (ret)
 		goto err;
 
@@ -495,6 +506,7 @@ static void destroy_nodes(void)
 	free(test.nodes);
 }
 
+// TODO poll only sent metadata wc
 static int poll_cqs(enum CQ_INDEX index)
 {
 	struct ibv_wc wc[8];
@@ -511,6 +523,28 @@ static int poll_cqs(enum CQ_INDEX index)
 				return ret;
 			}
 			printf("rwbenchmark: received %d work completions\n", ret);
+		}
+	}
+	return 0;
+}
+
+static int poll_metadata_wc(enum CQ_INDEX index)
+{
+	struct ibv_wc wc[8];
+	int done, i, ret;
+
+	for (i = 0; i < connections; i++) {
+		if (!test.nodes[i].connected)
+			continue;
+
+		for (done = 0; done < 1; done += ret) {
+			ret = ibv_poll_cq(test.nodes[i].cq[index], 1, wc);
+			if (ret < 0) {
+				printf("rwbenchmark: failed polling CQ: %d\n", ret);
+				return ret;
+			}
+			printf("rwbenchmark: received work completion wr_id: %lu len: %u s: %d f: %u\n",
+					wc->wr_id, wc->byte_len, wc->status, wc->wc_flags);
 		}
 	}
 	return 0;
@@ -664,22 +698,26 @@ static int run_client(void)
     // - X razy post, poll wszystkiego
     // na końcu wypisuje podsumowanie
 	if (message_count) {
-		printf("receiving data transfers\n");
-		ret = poll_cqs(RECV_CQ_INDEX);
+		printf("receiving metadata\n");
+		ret = poll_metadata_wc(RECV_CQ_INDEX);
 		if (ret)
 			goto disc;
+		
+		for (i = 0; i < connections; i++) print_metadata(&test.nodes[i]);
 
-		printf("sending replies\n");
-		for (i = 0; i < connections; i++) {
-			ret = post_sends(&test.nodes[i]);
-			if (ret)
-				goto disc;
-		}
+		printf("metadata received\n");
+		// TODO benchmark
+		// printf("sending replies\n");
+		// for (i = 0; i < connections; i++) {
+		// 	ret = post_sends(&test.nodes[i]);
+		// 	if (ret)
+		// 		goto disc;
+		// }
 
-		printf("completing sends\n");
-		ret = poll_cqs(SEND_CQ_INDEX);
+		// printf("completing sends\n");
+		// ret = poll_cqs(SEND_CQ_INDEX);
 
-		printf("data transfers complete\n");
+		// printf("data transfers complete\n");
 	}
 
 	ret = 0;
