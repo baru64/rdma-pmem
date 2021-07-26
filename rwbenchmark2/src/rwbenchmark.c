@@ -37,9 +37,11 @@ struct benchmark_node {
 	struct ibv_pd			*pd;
 	struct ibv_cq			*cq[2];
 	struct ibv_mr			*mr;
+	struct ibv_mr			*src_mem_mr;
 	struct ibv_mr			*server_metadata_mr;
 	struct statistics		*stats;
 	struct rdma_buffer_attr *server_metadata;
+    void                    *src_mem;
 	void					*mem;
 };
 
@@ -85,6 +87,10 @@ static void print_metadata(struct benchmark_node* node) {
 		node->server_metadata->key.local_key);
 }
 
+static void print_mem(struct benchmark_node* node) {
+	printf("MEM node %d > %.99s", node->id, (char*) node->mem);
+}
+
 static int create_message(struct benchmark_node *node)
 {
 	if (!message_size)
@@ -93,6 +99,7 @@ static int create_message(struct benchmark_node *node)
 	if (!message_count)
 		return 0;
 
+    // buffer for rdma operations
 	node->mem = malloc(message_size);
 	if (!node->mem) {
 		printf("failed message allocation\n");
@@ -105,6 +112,21 @@ static int create_message(struct benchmark_node *node)
 		goto err;
 	}
 
+    // source buffer
+	node->src_mem = malloc(message_size);
+	if (!node->src_mem) {
+		printf("failed src_mem allocation\n");
+		return -1;
+	}
+	node->src_mem_mr = ibv_reg_mr(node->pd, node->src_mem, message_size,
+			     (IBV_ACCESS_LOCAL_WRITE));
+	if (!node->src_mem_mr) {
+		printf("failed to reg MR\n");
+		goto err;
+	}
+	// temporary
+	sprintf(node->src_mem, "%d-testSTRING12345", node->id);
+
 	return 0;
 err:
 	free(node->mem);
@@ -115,7 +137,8 @@ static void server_set_metadata(struct benchmark_node* node)
 {
 	node->server_metadata->address = (uint64_t) node->mr->addr;
 	node->server_metadata->length = node->mr->length;
-	node->server_metadata->key.local_key = node->mr->lkey;
+	// TODO: not sure if rkey or lkey
+	node->server_metadata->key.local_key = node->mr->rkey;
 	print_metadata(node);
 }
 
@@ -306,6 +329,68 @@ static int post_send_metadata(struct benchmark_node *node)
 	return ret;
 }
 
+static int post_send_write(struct benchmark_node *node)
+{
+	struct ibv_send_wr send_wr, *bad_send_wr;
+	struct ibv_sge sge;
+	int i, ret = 0;
+
+	if (!node->connected)
+		return 0;
+	
+	send_wr.next = NULL;
+	send_wr.sg_list = &sge;
+	send_wr.num_sge = 1;
+	send_wr.opcode = IBV_WR_RDMA_WRITE;
+	send_wr.send_flags = 0;
+	send_wr.wr_id = (unsigned long)node;
+
+    // source
+	sge.length = message_size;
+	sge.lkey = node->src_mem_mr->lkey;
+	sge.addr = (uintptr_t) node->src_mem_mr->addr;
+
+    // remote write destination
+    send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
+    send_wr.wr.rdma.remote_addr = node->server_metadata->address;
+
+	ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
+	if (ret) 
+		printf("failed to post send metadata: %d\n", ret);
+	return ret;
+}
+
+static int post_send_read(struct benchmark_node *node)
+{
+	struct ibv_send_wr send_wr, *bad_send_wr;
+	struct ibv_sge sge;
+	int i, ret = 0;
+
+	if (!node->connected)
+		return 0;
+	
+	send_wr.next = NULL;
+	send_wr.sg_list = &sge;
+	send_wr.num_sge = 1;
+	send_wr.opcode = IBV_WR_RDMA_READ;
+	send_wr.send_flags = 0;
+	send_wr.wr_id = (unsigned long)node;
+
+    // destination
+	sge.length = message_size;
+	sge.lkey = node->mr->lkey;
+	sge.addr = (uintptr_t) node->mem;
+
+    // remote read source
+    send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
+    send_wr.wr.rdma.remote_addr = node->server_metadata->address;
+
+	ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
+	if (ret) 
+		printf("failed to post send metadata: %d\n", ret);
+	return ret;
+}
+
 static void connect_error(void)
 {
 	test.connects_left--;
@@ -461,6 +546,16 @@ static void destroy_node(struct benchmark_node *node)
 		free(node->mem);
 	}
 
+	if (node->src_mem) {
+		ibv_dereg_mr(node->src_mem_mr);
+		free(node->src_mem);
+	}
+
+	if (node->server_metadata) {
+		ibv_dereg_mr(node->server_metadata_mr);
+		free(node->server_metadata);
+	}
+
 	if (node->pd)
 		ibv_dealloc_pd(node->pd);
 
@@ -528,7 +623,7 @@ static int poll_cqs(enum CQ_INDEX index)
 	return 0;
 }
 
-static int poll_metadata_wc(enum CQ_INDEX index)
+static int poll_one_wc(enum CQ_INDEX index)
 {
 	struct ibv_wc wc[8];
 	int done, i, ret;
@@ -699,13 +794,37 @@ static int run_client(void)
     // na końcu wypisuje podsumowanie
 	if (message_count) {
 		printf("receiving metadata\n");
-		ret = poll_metadata_wc(RECV_CQ_INDEX);
+		ret = poll_one_wc(RECV_CQ_INDEX);
 		if (ret)
 			goto disc;
 		
 		for (i = 0; i < connections; i++) print_metadata(&test.nodes[i]);
 
 		printf("metadata received\n");
+
+		for (i = 0; i < connections; i++) {
+		 	ret = post_send_write(&test.nodes[i]);
+		 	if (ret)
+		 		goto disc;
+		}
+		puts("sent writes");
+		ret = poll_one_wc(RECV_CQ_INDEX);
+		if (ret)
+			goto disc;
+
+		for (i = 0; i < connections; i++) {
+		 	ret = post_send_read(&test.nodes[i]);
+		 	if (ret)
+		 		goto disc;
+		}
+		puts("sent reads");
+		ret = poll_one_wc(RECV_CQ_INDEX);
+		if (ret)
+			goto disc;
+
+		for (i = 0; i < connections; i++) print_mem(&test.nodes[i]);
+
+		// print mem
 		// TODO benchmark
 		// printf("sending replies\n");
 		// for (i = 0; i < connections; i++) {
