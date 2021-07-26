@@ -30,3 +30,4 @@ rdma-write-example/
 rwbenchmark/build
 rwbenchmark2/build
 */.ccls-cache
+pmdk/
