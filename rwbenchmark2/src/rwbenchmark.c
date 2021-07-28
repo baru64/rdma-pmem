@@ -7,6 +7,7 @@
 #include <netdb.h>
 #include <getopt.h>
 #include <time.h>
+#include <pthread.h>
 
 #include <rdma/rdma_cma.h>
 #include "common.h"
@@ -53,6 +54,7 @@ enum CQ_INDEX {
 struct benchmark {
 	struct rdma_event_channel *channel;
 	struct benchmark_node	*nodes;
+	pthread_t 				*threads;
 	int			conn_index;
 	int			connects_left;
 	int			disconnects_left;
@@ -575,6 +577,13 @@ static int alloc_nodes(void)
 	}
 	memset(test.nodes, 0, sizeof *test.nodes * connections);
 
+	test.threads = malloc(sizeof *test.threads * connections);
+	if (!test.threads) {
+		printf("rwbenchmark: unable to allocate memory for threads\n");
+		return -ENOMEM;
+	}
+	memset(test.threads, 0, sizeof *test.threads * connections);
+
 	for (i = 0; i < connections; i++) {
 		test.nodes[i].id = i;
 		if (dst_addr) {
@@ -643,6 +652,31 @@ static int poll_one_wc(enum CQ_INDEX index)
 			if (ret > 0)
 				printf("rwbenchmark: received work completion wr_id: %lu len: %u s: %s f: %u\n",
 					wc->wr_id, wc->byte_len, ibv_wc_status_str(wc->status), wc->wc_flags);
+		}
+	}
+	return 0;
+}
+
+static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
+						  int n) {
+	struct ibv_wc wc[8];
+	int done, i, ret;
+
+	if (!node->connected)
+		return 0;
+
+	for (done = 0; done < n; done += ret) {
+		ret = ibv_poll_cq(node->cq[index], 8, wc);
+		if (ret < 0) {
+			printf("rwbenchmark: failed polling CQ: %d\n", ret);
+			return ret;
+		}
+		if (ret > 0) {
+			for (i = 0; i < ret; ++i) {
+				printf("rwbenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n",
+					node->id, wc[i].wr_id, wc[i].byte_len,
+					ibv_wc_status_str(wc[i].status), wc[i].wc_flags);
+			}
 		}
 	}
 	return 0;
@@ -762,6 +796,45 @@ out:
 	return ret;
 }
 
+// TODO
+void *worker(void *index)
+{
+	// steps:
+	// - send write
+	// - poll cq
+	// - send read
+	// - poll cq
+	// - display
+	int ret;
+	int node_id = *(int*)index;
+	ret = post_send_write(&test.nodes[node_id]);
+	if (ret) {
+		printf("rwbenchmark: worker post_send_write error %d\n", ret);
+		return NULL;	
+	}
+	printf("%d - sent writes\n", node_id);
+	ret = node_poll_n_cq(&test.nodes[node_id], SEND_CQ_INDEX, 1);
+	if (ret) {
+		printf("rwbenchmark: worker node_poll_n_cq error %d\n", ret);
+		return NULL;	
+	}
+
+	ret = post_send_read(&test.nodes[node_id]);
+	if (ret) {
+		printf("rwbenchmark: worker post_send_read error %d\n", ret);
+		return NULL;	
+	}
+	printf("%d - sent reads\n", node_id);
+	ret = node_poll_n_cq(&test.nodes[node_id], SEND_CQ_INDEX, 1);
+	if (ret) {
+		printf("rwbenchmark: worker node_poll_n_cq error %d\n", ret);
+		return NULL;	
+	}
+
+	printf("%d - polled read wc\n", node_id);
+	print_mem(&test.nodes[node_id]);
+}
+
 static int run_client(void)
 {
 	int i, ret, ret2;
@@ -803,43 +876,39 @@ static int run_client(void)
 		
 		for (i = 0; i < connections; i++) print_metadata(&test.nodes[i]);
 
-		printf("metadata received\n");
-
+		printf("metadata received\n");			
+		// run workers
 		for (i = 0; i < connections; i++) {
-		 	ret = post_send_write(&test.nodes[i]);
-		 	if (ret)
-		 		goto disc;
+			pthread_create(&test.threads[i], NULL, worker, (void*) &i);
 		}
-		puts("sent writes");
-		ret = poll_one_wc(SEND_CQ_INDEX);
-		if (ret)
-			goto disc;
-
+		// join workers
 		for (i = 0; i < connections; i++) {
-		 	ret = post_send_read(&test.nodes[i]);
-		 	if (ret)
-		 		goto disc;
+			pthread_join(test.threads[i], NULL);
 		}
-		puts("sent reads");
-		ret = poll_one_wc(SEND_CQ_INDEX);
-		if (ret)
-			goto disc;
-
-		puts("polled read wc");
-		for (i = 0; i < connections; i++) print_mem(&test.nodes[i]);
-
-		// TODO benchmark
-		// printf("sending replies\n");
+		// ----------------- test
 		// for (i = 0; i < connections; i++) {
-		// 	ret = post_sends(&test.nodes[i]);
-		// 	if (ret)
-		// 		goto disc;
+		//  	ret = post_send_write(&test.nodes[i]);
+		//  	if (ret)
+		//  		goto disc;
 		// }
+		// puts("sent writes");
+		// ret = poll_one_wc(SEND_CQ_INDEX);
+		// if (ret)
+		// 	goto disc;
 
-		// printf("completing sends\n");
-		// ret = poll_cqs(SEND_CQ_INDEX);
+		// for (i = 0; i < connections; i++) {
+		//  	ret = post_send_read(&test.nodes[i]);
+		//  	if (ret)
+		//  		goto disc;
+		// }
+		// puts("sent reads");
+		// ret = poll_one_wc(SEND_CQ_INDEX);
+		// if (ret)
+		// 	goto disc;
 
-		// printf("data transfers complete\n");
+		// puts("polled read wc");
+		// for (i = 0; i < connections; i++) print_mem(&test.nodes[i]);
+		// -------------------------------
 	}
 
 	ret = 0;
@@ -849,11 +918,6 @@ disc:
 		ret = ret2;
 out:
 	return ret;
-}
-
-void worker()
-{
-    // Todo
 }
 
 int main(int argc, char **argv)
