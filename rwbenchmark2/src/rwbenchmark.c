@@ -88,7 +88,8 @@ static void print_metadata(struct benchmark_node* node) {
 }
 
 static void print_mem(struct benchmark_node* node) {
-	printf("MEM node %d > %.99s", node->id, (char*) node->mem);
+	puts("print mem");
+	printf("MEM node %d > %.99s\n", node->id, (char*) node->mem);
 }
 
 static int create_message(struct benchmark_node *node)
@@ -617,7 +618,8 @@ static int poll_cqs(enum CQ_INDEX index)
 				printf("rwbenchmark: failed polling CQ: %d\n", ret);
 				return ret;
 			}
-			printf("rwbenchmark: received %d work completions\n", ret);
+			if (ret > 0)
+				printf("rwbenchmark: received %d work completions\n", ret);
 		}
 	}
 	return 0;
@@ -638,8 +640,9 @@ static int poll_one_wc(enum CQ_INDEX index)
 				printf("rwbenchmark: failed polling CQ: %d\n", ret);
 				return ret;
 			}
-			printf("rwbenchmark: received work completion wr_id: %lu len: %u s: %d f: %u\n",
-					wc->wr_id, wc->byte_len, wc->status, wc->wc_flags);
+			if (ret > 0)
+				printf("rwbenchmark: received work completion wr_id: %lu len: %u s: %s f: %u\n",
+					wc->wr_id, wc->byte_len, ibv_wc_status_str(wc->status), wc->wc_flags);
 		}
 	}
 	return 0;
@@ -808,7 +811,7 @@ static int run_client(void)
 		 		goto disc;
 		}
 		puts("sent writes");
-		ret = poll_one_wc(RECV_CQ_INDEX);
+		ret = poll_one_wc(SEND_CQ_INDEX);
 		if (ret)
 			goto disc;
 
@@ -818,13 +821,13 @@ static int run_client(void)
 		 		goto disc;
 		}
 		puts("sent reads");
-		ret = poll_one_wc(RECV_CQ_INDEX);
+		ret = poll_one_wc(SEND_CQ_INDEX);
 		if (ret)
 			goto disc;
 
+		puts("polled read wc");
 		for (i = 0; i < connections; i++) print_mem(&test.nodes[i]);
 
-		// print mem
 		// TODO benchmark
 		// printf("sending replies\n");
 		// for (i = 0; i < connections; i++) {
