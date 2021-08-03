@@ -1,5 +1,6 @@
-- add conditional start, stop
-- add benchmark body
-- add statistics - counting, print
-- add client disconnect
-- test read/write size options
+issues:
+- segfault with 4096 byte buffer
+- failed mr register with 2048 byte buffer and more than 4 connections
+todo:
+- add pmem buffer
+- add option to change mem/pmem

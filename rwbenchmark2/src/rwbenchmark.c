@@ -8,6 +8,8 @@
 #include <getopt.h>
 #include <time.h>
 #include <pthread.h>
+#include <stdbool.h>
+#include <stdatomic.h>
 
 #include <rdma/rdma_cma.h>
 #include "common.h"
@@ -74,12 +76,36 @@ static char *src_addr;
 static struct rdma_addrinfo hints;
 static uint8_t set_timeout;
 static uint8_t timeout;
-size_t metadata_size = sizeof(struct rdma_buffer_attr);
+static size_t metadata_size = sizeof(struct rdma_buffer_attr);
+atomic_bool begin = false;
+atomic_bool stop = false;
+struct timespec sleep_time;
+struct timespec prepare_time;
+struct statistics total_stats;
 
 uint64_t get_time_ns() {
     struct timespec spec;
     clock_gettime(CLOCK_REALTIME, &spec);
     return (uint64_t) spec.tv_sec * (1000 * 1000 * 1000) + (uint64_t) spec.tv_nsec;
+}
+
+static void print_stats(struct statistics *stats) {
+	puts("ops | avg lat [ns] | avg jitter [ns] | throughput [GB/s]");
+	printf("%lu %lu %lu %f\n", stats->ops,
+			stats->latency / stats->ops,
+			stats->jitter / (stats->ops - 1),
+			(double) stats->ops * message_size / (1024 * 1024 * 1024)
+			* 1000000000 / stats->elapsed_nanoseconds);
+}
+
+static void node_print_stats(struct benchmark_node *node) {
+	puts("th | ops | time [ns] | avg lat [ns] | avg jitter [ns] | throughput [GB/s]");
+	printf("%d %lu %lu %lu %lu %f\n", node->id, node->stats->ops,
+			node->stats->elapsed_nanoseconds,
+			node->stats->latency / node->stats->ops,
+			node->stats->jitter / (node->stats->ops - 1),
+			(double) node->stats->ops * message_size / (1024 * 1024 * 1024)
+			* 1000000000 / node->stats->elapsed_nanoseconds);
 }
 
 static void print_metadata(struct benchmark_node* node) {
@@ -224,7 +250,6 @@ static int init_node(struct benchmark_node *node)
 		goto out;
 	}
 out:
-	free(node->stats);
 	return ret;
 }
 
@@ -559,6 +584,10 @@ static void destroy_node(struct benchmark_node *node)
 		free(node->server_metadata);
 	}
 
+	if (node->stats) {
+		free(node->stats);
+	}
+
 	if (node->pd)
 		ibv_dealloc_pd(node->pd);
 
@@ -648,13 +677,13 @@ static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
 			printf("rwbenchmark: failed polling CQ: %d\n", ret);
 			return ret;
 		}
-		if (ret > 0) {
-			for (i = 0; i < ret; ++i) {
-				printf("rwbenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n",
-					node->id, wc[i].wr_id, wc[i].byte_len,
-					ibv_wc_status_str(wc[i].status), wc[i].wc_flags);
-			}
-		}
+		// if (ret > 0) {
+		// 	for (i = 0; i < ret; ++i) {
+		// 		printf("rwbenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n",
+		// 			node->id, wc[i].wr_id, wc[i].byte_len,
+		// 			ibv_wc_status_str(wc[i].status), wc[i].wc_flags);
+		// 	}
+		// }
 	}
 	return 0;
 }
@@ -748,15 +777,6 @@ static int run_server(void)
 		printf("metadata sent\n");
 	}
 
-	// printf("rwbenchmark: disconnecting\n");
-	// for (i = 0; i < connections; i++) {
-	// 	if (!test.nodes[i].connected)
-	// 		continue;
-
-	// 	test.nodes[i].connected = 0;
-	// 	rdma_disconnect(test.nodes[i].cma_id);
-	// }
-
 	ret = disconnect_events();
 
  	printf("disconnected\n");
@@ -766,41 +786,52 @@ out:
 	return ret;
 }
 
-// TODO: add benchmark body - wait start; write, read, count, repeat until stop
 void *worker(void *index)
 {
 	int ret;
-	int node_id = *(int*)index;
-	printf("node %d starts\n", node_id);
-	// RDMA WRITE
-	ret = post_send_write(&test.nodes[node_id]);
-	if (ret) {
-		printf("rwbenchmark: worker post_send_write error %d\n", ret);
-		return NULL;	
-	}
-	printf("%d - sent writes\n", node_id);
-	// wait for completion
-	ret = node_poll_n_cq(&test.nodes[node_id], SEND_CQ_INDEX, 1);
-	if (ret) {
-		printf("rwbenchmark: worker node_poll_n_cq error %d\n", ret);
-		return NULL;	
-	}
-	// RDMA READ
-	ret = post_send_read(&test.nodes[node_id]);
-	if (ret) {
-		printf("rwbenchmark: worker post_send_read error %d\n", ret);
-		return NULL;	
-	}
-	printf("%d - sent reads\n", node_id);
-	// wait for completion
-	ret = node_poll_n_cq(&test.nodes[node_id], SEND_CQ_INDEX, 1);
-	if (ret) {
-		printf("rwbenchmark: worker node_poll_n_cq error %d\n", ret);
-		return NULL;	
-	}
+	uint64_t start, end, current_latency;
+	struct benchmark_node *node = &test.nodes[*(int*)index];
 
-	printf("%d - polled read wc\n", node_id);
-	print_mem(&test.nodes[node_id]);
+	while(!begin) { /* wait */ }
+	node->stats->elapsed_nanoseconds = get_time_ns();
+
+	while (!stop) {
+		start = get_time_ns();
+		// RDMA WRITE
+		ret = post_send_write(node);
+		if (ret) {
+			printf("rwbenchmark: worker post_send_write error %d\n", ret);
+			return NULL;	
+		}
+		// wait for completion
+		ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
+		if (ret) {
+			printf("rwbenchmark: worker node_poll_n_cq error %d\n", ret);
+			return NULL;	
+		}
+		// RDMA READ
+		ret = post_send_read(node);
+		if (ret) {
+			printf("rwbenchmark: worker post_send_read error %d\n", ret);
+			return NULL;	
+		}
+		// wait for completion
+		ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
+		if (ret) {
+			printf("rwbenchmark: worker node_poll_n_cq error %d\n", ret);
+			return NULL;	
+		}
+		end = get_time_ns();
+
+		node->stats->ops++;
+		current_latency = end - start;
+		node->stats->latency += current_latency;
+		if (node->stats->last_latency != 0)
+			node->stats->jitter += labs((long)node->stats->last_latency - (long)current_latency);
+		node->stats->last_latency = end - start;
+	}
+	node->stats->elapsed_nanoseconds = get_time_ns() - node->stats->elapsed_nanoseconds;
+	node_print_stats(node);
 	return NULL;
 }
 
@@ -831,12 +862,6 @@ static int run_client(void)
 	if (ret)
 		goto disc;
 
-    // zamiast tego odpalamy thready
-    // każdy thread odbiera najpierw dane MR, (albo nic nie robi przy send) 
-    // następnie robi w pętli:
-    // - post, poll
-    // - X razy post, poll wszystkiego
-    // na końcu wypisuje podsumowanie
 	if (message_count) {
 		printf("receiving metadata\n");
 		ret = poll_one_wc(RECV_CQ_INDEX);
@@ -848,19 +873,34 @@ static int run_client(void)
 		printf("metadata received\n");			
 		// run workers
 		for (i = 0; i < connections; i++) {
-			pthread_create(&test.threads[i], NULL, worker, (void*) &test.nodes[i].id);
+			pthread_create(&test.threads[i], NULL, worker,
+							(void*) &test.nodes[i].id);
 		}
-		// TODO: SET CONDITIONAL START
-		// TODO: WAIT N SECONDS
-		// TODO: SET CONDITIONAL STOP
+		nanosleep(&prepare_time, NULL);
+		begin = true;
+		nanosleep(&sleep_time, NULL); // benchmark work
+		stop = true;
 		// join workers
 		for (i = 0; i < connections; i++) {
 			pthread_join(test.threads[i], NULL);
 		}
+		// total statistics
+		memset(&total_stats, 0, sizeof (struct statistics));
+		for (i = 0; i < connections; i++) {
+			total_stats.latency += test.nodes[i].stats->latency;
+			total_stats.ops += test.nodes[i].stats->ops;
+			total_stats.jitter += test.nodes[i].stats->jitter;
+			total_stats.elapsed_nanoseconds += test.nodes[i].stats->elapsed_nanoseconds;
+		}
+		print_stats(&total_stats);
 	}
 
 	ret = 0;
 disc:
+
+	for (i = 0; i < connections; i++) {
+		rdma_disconnect(test.nodes[i].cma_id);
+	}
 	ret2 = disconnect_events();
 	if (ret2)
 		ret = ret2;
@@ -871,6 +911,11 @@ out:
 int main(int argc, char **argv)
 {
 	int op, ret;
+
+	sleep_time.tv_sec = 1;
+	sleep_time.tv_nsec = 0;
+	prepare_time.tv_sec = 1;
+	prepare_time.tv_nsec = 0;
 
 	hints.ai_port_space = RDMA_PS_TCP;
 	while ((op = getopt(argc, argv, "s:b:f:P:c:C:S:t:p:a:m")) != -1) {
@@ -908,8 +953,7 @@ int main(int argc, char **argv)
 			message_size = atoi(optarg);
 			break;
 		case 't':
-			set_tos = 1;
-			tos = (uint8_t) strtoul(optarg, NULL, 0);
+			sleep_time.tv_sec = atoi(optarg);
 			break;
 		case 'p':
 			port = optarg;
@@ -929,7 +973,7 @@ int main(int argc, char **argv)
 			printf("\t[-c connections]\n");
 			printf("\t[-C message_count]\n");
 			printf("\t[-S message_size]\n");
-			printf("\t[-t type_of_service]\n");
+			printf("\t[-t benchmark_time]\n");
 			printf("\t[-p port_number]\n");
 			printf("\t[-m(igrate)]\n");
 			printf("\t[-a ack_timeout]\n");
