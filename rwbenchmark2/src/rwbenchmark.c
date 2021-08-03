@@ -611,29 +611,6 @@ static void destroy_nodes(void)
 	free(test.nodes);
 }
 
-// TODO poll only sent metadata wc
-static int poll_cqs(enum CQ_INDEX index)
-{
-	struct ibv_wc wc[8];
-	int done, i, ret;
-
-	for (i = 0; i < connections; i++) {
-		if (!test.nodes[i].connected)
-			continue;
-
-		for (done = 0; done < message_count; done += ret) {
-			ret = ibv_poll_cq(test.nodes[i].cq[index], 8, wc);
-			if (ret < 0) {
-				printf("rwbenchmark: failed polling CQ: %d\n", ret);
-				return ret;
-			}
-			if (ret > 0)
-				printf("rwbenchmark: received %d work completions\n", ret);
-		}
-	}
-	return 0;
-}
-
 static int poll_one_wc(enum CQ_INDEX index)
 {
 	struct ibv_wc wc[8];
@@ -764,18 +741,11 @@ static int run_server(void)
 		}
 
 		printf("completing sends\n");
-		ret = poll_cqs(SEND_CQ_INDEX);
+		ret = poll_one_wc(SEND_CQ_INDEX);
 		if (ret)
 			goto out;
 		
 		printf("metadata sent\n");
-
-		// printf("receiving data transfers\n");
-		// ret = poll_cqs(RECV_CQ_INDEX);
-		// if (ret)
-		// 	goto out;
-		// printf("data transfers complete\n");
-
 	}
 
 	// printf("rwbenchmark: disconnecting\n");
@@ -796,35 +766,33 @@ out:
 	return ret;
 }
 
-// TODO
+// TODO: add benchmark body - wait start; write, read, count, repeat until stop
 void *worker(void *index)
 {
-	// steps:
-	// - send write
-	// - poll cq
-	// - send read
-	// - poll cq
-	// - display
 	int ret;
 	int node_id = *(int*)index;
+	printf("node %d starts\n", node_id);
+	// RDMA WRITE
 	ret = post_send_write(&test.nodes[node_id]);
 	if (ret) {
 		printf("rwbenchmark: worker post_send_write error %d\n", ret);
 		return NULL;	
 	}
 	printf("%d - sent writes\n", node_id);
+	// wait for completion
 	ret = node_poll_n_cq(&test.nodes[node_id], SEND_CQ_INDEX, 1);
 	if (ret) {
 		printf("rwbenchmark: worker node_poll_n_cq error %d\n", ret);
 		return NULL;	
 	}
-
+	// RDMA READ
 	ret = post_send_read(&test.nodes[node_id]);
 	if (ret) {
 		printf("rwbenchmark: worker post_send_read error %d\n", ret);
 		return NULL;	
 	}
 	printf("%d - sent reads\n", node_id);
+	// wait for completion
 	ret = node_poll_n_cq(&test.nodes[node_id], SEND_CQ_INDEX, 1);
 	if (ret) {
 		printf("rwbenchmark: worker node_poll_n_cq error %d\n", ret);
@@ -833,6 +801,7 @@ void *worker(void *index)
 
 	printf("%d - polled read wc\n", node_id);
 	print_mem(&test.nodes[node_id]);
+	return NULL;
 }
 
 static int run_client(void)
@@ -879,36 +848,15 @@ static int run_client(void)
 		printf("metadata received\n");			
 		// run workers
 		for (i = 0; i < connections; i++) {
-			pthread_create(&test.threads[i], NULL, worker, (void*) &i);
+			pthread_create(&test.threads[i], NULL, worker, (void*) &test.nodes[i].id);
 		}
+		// TODO: SET CONDITIONAL START
+		// TODO: WAIT N SECONDS
+		// TODO: SET CONDITIONAL STOP
 		// join workers
 		for (i = 0; i < connections; i++) {
 			pthread_join(test.threads[i], NULL);
 		}
-		// ----------------- test
-		// for (i = 0; i < connections; i++) {
-		//  	ret = post_send_write(&test.nodes[i]);
-		//  	if (ret)
-		//  		goto disc;
-		// }
-		// puts("sent writes");
-		// ret = poll_one_wc(SEND_CQ_INDEX);
-		// if (ret)
-		// 	goto disc;
-
-		// for (i = 0; i < connections; i++) {
-		//  	ret = post_send_read(&test.nodes[i]);
-		//  	if (ret)
-		//  		goto disc;
-		// }
-		// puts("sent reads");
-		// ret = poll_one_wc(SEND_CQ_INDEX);
-		// if (ret)
-		// 	goto disc;
-
-		// puts("polled read wc");
-		// for (i = 0; i < connections; i++) print_mem(&test.nodes[i]);
-		// -------------------------------
 	}
 
 	ret = 0;

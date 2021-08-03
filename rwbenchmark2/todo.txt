@@ -1,5 +1,5 @@
-- add post_send_write
-- add post_send_read
-- add benchmark threads
-- test
-- add statistics
+- add conditional start, stop
+- add benchmark body
+- add statistics - counting, print
+- add client disconnect
+- test read/write size options
