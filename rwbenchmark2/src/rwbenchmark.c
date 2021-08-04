@@ -10,9 +10,12 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <libpmem.h>
 
 #include <rdma/rdma_cma.h>
 #include "common.h"
+
+#define PMEM_PATH "/pmem-fs/myfile"
 
 struct __attribute((packed)) rdma_buffer_attr {
   uint64_t address;
@@ -77,8 +80,11 @@ static struct rdma_addrinfo hints;
 static uint8_t set_timeout;
 static uint8_t timeout;
 static size_t metadata_size = sizeof(struct rdma_buffer_attr);
+static size_t *pmem_mapped_len;
+int is_pmem;
 atomic_bool begin = false;
 atomic_bool stop = false;
+bool use_pmem = false;
 struct timespec sleep_time;
 struct timespec prepare_time;
 struct statistics total_stats;
@@ -134,14 +140,28 @@ static int create_message(struct benchmark_node *node)
 		return 0;
 
     // buffer for rdma operations
-	node->mem = malloc(message_size);
-	if (!node->mem) {
-		printf("failed message allocation\n");
-		return -1;
-	}
+    if (use_pmem) {
+        node->mem = pmem_map_file(PMEM_PATH, message_size, PMEM_FILE_CREATE,
+                                    0666, &pmem_mapped_len[node->id], &is_pmem);
+        if (node->mem == NULL) {
+	    	printf("failed pmem allocation\n");
+	    	return -1;
+        }
+        if (!is_pmem) {
+	    	printf("error: not pmem\n");
+	    	return -1;
+        }
+    } else {
+	    node->mem = malloc(message_size);
+	    if (!node->mem) {
+	    	printf("failed message allocation\n");
+	    	return -1;
+	    }
+    }
 
 	node->mr = ibv_reg_mr(node->pd, node->mem, message_size,
-			     (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE));
+			                (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
+                             IBV_ACCESS_REMOTE_WRITE));
 	if (!node->mr) {
 		printf("failed to reg MR errno %d\n", errno);
 		goto err;
@@ -604,6 +624,12 @@ static void destroy_node(struct benchmark_node *node)
 static int alloc_nodes(void)
 {
 	int ret, i;
+
+    mapped_len = malloc(sizeof size_t * connections);
+	if (!mapped_len) {
+		printf("rwbenchmark: unable to allocate memory for mapped len\n");
+		return -ENOMEM;
+	}
 
 	test.nodes = malloc(sizeof *test.nodes * connections);
 	if (!test.nodes) {
