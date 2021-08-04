@@ -83,13 +83,15 @@ struct timespec sleep_time;
 struct timespec prepare_time;
 struct statistics total_stats;
 
-uint64_t get_time_ns() {
+uint64_t get_time_ns()
+{
     struct timespec spec;
     clock_gettime(CLOCK_REALTIME, &spec);
     return (uint64_t) spec.tv_sec * (1000 * 1000 * 1000) + (uint64_t) spec.tv_nsec;
 }
 
-static void print_stats(struct statistics *stats) {
+static void print_stats(struct statistics *stats)
+{
 	puts("ops | avg lat [ns] | avg jitter [ns] | throughput [GB/s]");
 	printf("%lu %lu %lu %f\n", stats->ops,
 			stats->latency / stats->ops,
@@ -98,7 +100,8 @@ static void print_stats(struct statistics *stats) {
 			* 1000000000 / stats->elapsed_nanoseconds);
 }
 
-static void node_print_stats(struct benchmark_node *node) {
+static void node_print_stats(struct benchmark_node *node)
+{
 	puts("th | ops | time [ns] | avg lat [ns] | avg jitter [ns] | throughput [GB/s]");
 	printf("%d %lu %lu %lu %lu %f\n", node->id, node->stats->ops,
 			node->stats->elapsed_nanoseconds,
@@ -108,14 +111,16 @@ static void node_print_stats(struct benchmark_node *node) {
 			* 1000000000 / node->stats->elapsed_nanoseconds);
 }
 
-static void print_metadata(struct benchmark_node* node) {
+static void print_metadata(struct benchmark_node* node)
+{
 	printf("Server addr:len:key for node %d > %lu:%u:%u\n", node->id,
 		node->server_metadata->address,
 		node->server_metadata->length,
 		node->server_metadata->key.local_key);
 }
 
-static void print_mem(struct benchmark_node* node) {
+static void print_mem(struct benchmark_node* node)
+{
 	puts("print mem");
 	printf("MEM node %d > %.99s\n", node->id, (char*) node->mem);
 }
@@ -134,10 +139,11 @@ static int create_message(struct benchmark_node *node)
 		printf("failed message allocation\n");
 		return -1;
 	}
+
 	node->mr = ibv_reg_mr(node->pd, node->mem, message_size,
 			     (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE));
 	if (!node->mr) {
-		printf("failed to reg MR\n");
+		printf("failed to reg MR errno %d\n", errno);
 		goto err;
 	}
 
@@ -154,7 +160,7 @@ static int create_message(struct benchmark_node *node)
 		goto err;
 	}
 	// temporary
-	sprintf(node->src_mem, "%d-testSTRING12345", node->id);
+	// sprintf(node->src_mem, "%d-testSTRING12345", node->id);
 
 	return 0;
 err:
@@ -166,7 +172,6 @@ static void server_set_metadata(struct benchmark_node* node)
 {
 	node->server_metadata->address = (uint64_t) node->mr->addr;
 	node->server_metadata->length = node->mr->length;
-	// TODO: not sure if rkey or lkey
 	node->server_metadata->key.local_key = node->mr->rkey;
 	print_metadata(node);
 }
@@ -281,7 +286,8 @@ static int post_recvs(struct benchmark_node *node)
 	return ret;
 }
 
-static int post_recv_metadata(struct benchmark_node *node) {
+static int post_recv_metadata(struct benchmark_node *node)
+{
 	struct ibv_recv_wr recv_wr, *recv_failure;
 	struct ibv_sge sge;
 	int ret = 0;
@@ -750,7 +756,7 @@ static int run_server(void)
 		goto out;
 	}
 
-	ret = rdma_listen(listen_id, 0);
+	ret = rdma_listen(listen_id, 8);
 	if (ret) {
 		perror("rwbenchmark: failure trying to listen");
 		goto out;

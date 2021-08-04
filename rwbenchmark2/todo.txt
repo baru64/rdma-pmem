@@ -1,6 +1,7 @@
 issues:
 - segfault with 4096 byte buffer
 - failed mr register with 2048 byte buffer and more than 4 connections
+- both occur only on soft-roce vm
 todo:
 - add pmem buffer
 - add option to change mem/pmem
