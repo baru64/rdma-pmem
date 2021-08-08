@@ -5,7 +5,7 @@ project(rwbenchmark VERSION 1.0)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED True)
 
-link_libraries(ibverbs rdmacm pthread)
+link_libraries(ibverbs rdmacm pthread pmem)
 
 add_executable(rwbenchmark src/rwbenchmark.c src/common.c)
 

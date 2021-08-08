@@ -15,7 +15,7 @@
 #include <rdma/rdma_cma.h>
 #include "common.h"
 
-#define PMEM_PATH "/pmem-fs/myfile"
+#define PMEM_PATH "/mnt/pmem0/rdmabenchmark"
 
 struct __attribute((packed)) rdma_buffer_attr {
   uint64_t address;
@@ -184,7 +184,7 @@ static int create_message(struct benchmark_node *node)
 
 	return 0;
 err:
-	free(node->mem);
+	if(!use_pmem) free(node->mem);
 	return -1;
 }
 
@@ -625,8 +625,8 @@ static int alloc_nodes(void)
 {
 	int ret, i;
 
-    mapped_len = malloc(sizeof size_t * connections);
-	if (!mapped_len) {
+    pmem_mapped_len = malloc(sizeof(size_t) * connections);
+	if (!pmem_mapped_len) {
 		printf("rwbenchmark: unable to allocate memory for mapped len\n");
 		return -ENOMEM;
 	}
@@ -942,7 +942,7 @@ out:
 
 int main(int argc, char **argv)
 {
-	int op, ret;
+	int op, ret, option_index;
 
 	sleep_time.tv_sec = 1;
 	sleep_time.tv_nsec = 0;
@@ -950,7 +950,12 @@ int main(int argc, char **argv)
 	prepare_time.tv_nsec = 0;
 
 	hints.ai_port_space = RDMA_PS_TCP;
-	while ((op = getopt(argc, argv, "s:b:f:P:c:C:S:t:p:a:m")) != -1) {
+
+	static struct option long_options[] = {
+		{"pmem", no_argument, NULL, 0}
+	};
+	while ((op = getopt_long(argc, argv, "s:b:f:P:c:C:S:t:p:a:0", long_options,
+			&option_index)) != -1) {
 		switch (op) {
 		case 's':
 			dst_addr = optarg;
@@ -994,6 +999,9 @@ int main(int argc, char **argv)
 			set_timeout = 1;
 			timeout = (uint8_t) strtoul(optarg, NULL, 0);
 			break;
+		case 0:
+			use_pmem = true;
+			break;
 		default:
 			printf("usage: %s\n", argv[0]);
 			printf("\t[-s server_address]\n");
@@ -1007,8 +1015,8 @@ int main(int argc, char **argv)
 			printf("\t[-S message_size]\n");
 			printf("\t[-t benchmark_time]\n");
 			printf("\t[-p port_number]\n");
-			printf("\t[-m(igrate)]\n");
 			printf("\t[-a ack_timeout]\n");
+			printf("\t[--pmem enable pmem]\n");
 			exit(1);
 		}
 	}
