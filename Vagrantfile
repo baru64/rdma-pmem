@@ -9,7 +9,7 @@ Vagrant.configure("2") do |config|
     node1.vm.synced_folder ".", "/home/vagrant/host"
 
     node1.vm.provider "virtualbox" do |vb|
-      vb.memory = "6144"
+      vb.memory = "3584"
       vb.cpus = 2
     end
   end
@@ -21,7 +21,7 @@ Vagrant.configure("2") do |config|
     node2.vm.synced_folder ".", "/home/vagrant/host"
 
     node2.vm.provider "virtualbox" do |vb|
-      vb.memory = "6144"
+      vb.memory = "3072"
       vb.cpus = 2
     end
   end

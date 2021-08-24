@@ -15,8 +15,6 @@
 #include <rdma/rdma_cma.h>
 #include "common.h"
 
-#define PMEM_PATH "/mnt/pmem0/rdmabenchmark"
-
 struct __attribute((packed)) rdma_buffer_attr {
   uint64_t address;
   uint32_t length;
@@ -88,12 +86,14 @@ bool use_pmem = false;
 struct timespec sleep_time;
 struct timespec prepare_time;
 struct statistics total_stats;
+char pmem_file_path[128] = {0};
 
 uint64_t get_time_ns()
 {
     struct timespec spec;
     clock_gettime(CLOCK_REALTIME, &spec);
-    return (uint64_t) spec.tv_sec * (1000 * 1000 * 1000) + (uint64_t) spec.tv_nsec;
+    return (uint64_t) spec.tv_sec * (1000 * 1000 * 1000)
+            + (uint64_t) spec.tv_nsec;
 }
 
 static void print_stats(struct statistics *stats)
@@ -141,8 +141,8 @@ static int create_message(struct benchmark_node *node)
 
     // buffer for rdma operations
     if (use_pmem) {
-        node->mem = pmem_map_file(PMEM_PATH, message_size, PMEM_FILE_CREATE,
-                                    0666, &pmem_mapped_len[node->id], &is_pmem);
+        node->mem = pmem_map_file(pmem_file_path, 0 /* len */, 0 /* flags */,
+                        0 /* mode */, &pmem_mapped_len[node->id], &is_pmem);
         if (node->mem == NULL) {
 	    	printf("failed pmem allocation\n");
 	    	return -1;
@@ -184,7 +184,7 @@ static int create_message(struct benchmark_node *node)
 
 	return 0;
 err:
-	if(!use_pmem) free(node->mem);
+	if (!use_pmem) free(node->mem);
 	return -1;
 }
 
@@ -597,7 +597,7 @@ static void destroy_node(struct benchmark_node *node)
 
 	if (node->mem) {
 		ibv_dereg_mr(node->mr);
-		free(node->mem);
+		if (!use_pmem) free(node->mem);
 	}
 
 	if (node->src_mem) {
@@ -952,7 +952,7 @@ int main(int argc, char **argv)
 	hints.ai_port_space = RDMA_PS_TCP;
 
 	static struct option long_options[] = {
-		{"pmem", no_argument, NULL, 0}
+		{"pmem", required_argument, NULL, 0}
 	};
 	while ((op = getopt_long(argc, argv, "s:b:f:P:c:C:S:t:p:a:0", long_options,
 			&option_index)) != -1) {
@@ -1000,7 +1000,8 @@ int main(int argc, char **argv)
 			timeout = (uint8_t) strtoul(optarg, NULL, 0);
 			break;
 		case 0:
-			use_pmem = true;
+			strcpy(pmem_file_path, optarg);
+            use_pmem = true;
 			break;
 		default:
 			printf("usage: %s\n", argv[0]);
@@ -1016,7 +1017,7 @@ int main(int argc, char **argv)
 			printf("\t[-t benchmark_time]\n");
 			printf("\t[-p port_number]\n");
 			printf("\t[-a ack_timeout]\n");
-			printf("\t[--pmem enable pmem]\n");
+			printf("\t[--pmem pmem_file_path]\n");
 			exit(1);
 		}
 	}
