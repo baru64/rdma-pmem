@@ -27,7 +27,7 @@ struct __attribute((packed)) rdma_buffer_attr {
 };
 
 struct __attribute((packed)) flush_request {
-  uint64_t address; // a nie index??
+  uint64_t address;
   uint32_t length;
 };
 
@@ -48,11 +48,8 @@ struct benchmark_node {
 	struct ibv_mr			*mr;
 	struct ibv_mr			*src_mem_mr;
 	struct ibv_mr			*server_metadata_mr;
-	struct ibv_mr			*flush_request_buff_mr;
 	struct statistics		*stats;
 	struct rdma_buffer_attr *server_metadata;
-    struct flush_request    *flush_request_buff;
-    struct ibv_comp_channel *comp_channel;
     void                    *src_mem;
 	void					*mem;
 };
@@ -223,25 +220,6 @@ err:
 	return -1;
 }
 
-static int create_flush_request_buffer(struct benchmark_node *node) {
-	node->flush_request_buff = calloc(sizeof(struct flush_request), 1);
-	if (!node->flush_request_buff) {
-		printf("failed flush_request_buff allocation\n");
-		return -1;
-	}
-	node->flush_request_buff_mr = ibv_reg_mr(node->pd, node->flush_request_buff,
-										  sizeof(struct flush_request), IBV_ACCESS_LOCAL_WRITE);
-	if (!node->flush_request_buff_mr) {
-		printf("failed to reg flush_request_buff_mr\n");
-		goto err;
-	}
-
-	return 0;
-err:
-	free(node->flush_request_buff);
-	return -1;
-}
-
 static int init_node(struct benchmark_node *node)
 {
 	struct ibv_qp_init_attr init_qp_attr;
@@ -250,41 +228,25 @@ static int init_node(struct benchmark_node *node)
 	node->stats = calloc(sizeof(struct statistics), 1);
 	if (!node->stats) {
 		ret = -ENOMEM;
-		printf("wsbenchmark: unable to allocate statistics errno: %d", errno);
+		printf("wibenchmark: unable to allocate statistics errno: %d", errno);
 		goto out;
 	}
 
 	node->pd = ibv_alloc_pd(node->cma_id->verbs);
 	if (!node->pd) {
 		ret = -ENOMEM;
-		printf("wsbenchmark: unable to allocate PD\n");
+		printf("wibenchmark: unable to allocate PD\n");
 		goto out;
 	}
-
-    node->comp_channel = ibv_create_comp_channel(node->cma_id->verbs);
-    if (!node->comp_channel) {
-        printf("wsbenchmark: failed to create comp_channel\n");
-        ret = -errno;
-        goto out;
-    }
 
 	cqe = message_count ? message_count : 1;
-	node->cq[SEND_CQ_INDEX] = ibv_create_cq(node->cma_id->verbs, cqe, node,
-                                            NULL, 0);
-	node->cq[RECV_CQ_INDEX] = ibv_create_cq(node->cma_id->verbs, cqe, node,
-                                            node->comp_channel, 0);
+	node->cq[SEND_CQ_INDEX] = ibv_create_cq(node->cma_id->verbs, cqe, node, NULL, 0);
+	node->cq[RECV_CQ_INDEX] = ibv_create_cq(node->cma_id->verbs, cqe, node, NULL, 0);
 	if (!node->cq[SEND_CQ_INDEX] || !node->cq[RECV_CQ_INDEX]) {
 		ret = -ENOMEM;
-		printf("wsbenchmark: unable to create CQ\n");
+		printf("wibenchmark: unable to create CQ\n");
 		goto out;
 	}
-
-    // request only recv cq expertiment TODO
-    if (ibv_req_notify_cq(node->cq[RECV_CQ_INDEX], 0)) {
-        fprintf(stderr, "Couldn't request CQ notification\n");
-        ret = 1;
-        goto out;
-    }
 
 	memset(&init_qp_attr, 0, sizeof init_qp_attr);
 	init_qp_attr.cap.max_send_wr = cqe;
@@ -298,33 +260,54 @@ static int init_node(struct benchmark_node *node)
 	init_qp_attr.recv_cq = node->cq[RECV_CQ_INDEX];
 	ret = rdma_create_qp(node->cma_id, node->pd, &init_qp_attr);
 	if (ret) {
-		perror("wsbenchmark: unable to create QP");
+		perror("wibenchmark: unable to create QP");
 		goto out;
 	}
 
 	// allocate metadata buffer and mr
 	ret = create_metadata(node);
 	if (ret) {
-		printf("wsbenchmark: failed to create metadata buffer: %d\n", ret);
+		printf("wibenchmark: failed to create metadata buffer: %d\n", ret);
 		goto out;
 	}
 
 	print_metadata(node);
 
-	// allocate flush_request buffer and mr
-	ret = create_flush_request_buffer(node);
-	if (ret) {
-		printf("wsbenchmark: failed to create metadata buffer: %d\n", ret);
-		goto out;
-	}
-
 	// allocate buffer and create message MR
 	ret = create_message(node);
 	if (ret) {
-		printf("wsbenchmark: failed to create messages: %d\n", ret);
+		printf("wibenchmark: failed to create messages: %d\n", ret);
 		goto out;
 	}
 out:
+	return ret;
+}
+
+static int post_recvs(struct benchmark_node *node)
+{
+	struct ibv_recv_wr recv_wr, *recv_failure;
+	struct ibv_sge sge;
+	int i, ret = 0;
+
+	if (!message_count)
+		return 0;
+
+	recv_wr.next = NULL;
+	recv_wr.sg_list = &sge;
+	recv_wr.num_sge = 1;
+	recv_wr.wr_id = (uintptr_t) node;
+
+	sge.length = message_size;
+	sge.lkey = node->mr->lkey;
+	sge.addr = (uintptr_t) node->mem;
+
+	for (i = 0; i < message_count && !ret; i++ ) {
+		ret = ibv_post_recv(node->cma_id->qp, &recv_wr, &recv_failure);
+		if (ret) {
+			printf("failed to post receives: %d\n", ret);
+			break;
+		}
+	}
 	return ret;
 }
 
@@ -351,26 +334,50 @@ static int post_recv_metadata(struct benchmark_node *node)
 	return ret;
 }
 
-static int post_recv_flush(struct benchmark_node *node)
+static int post_recv_imm(struct benchmark_node *node)
 {
 	struct ibv_recv_wr recv_wr, *recv_failure;
 	struct ibv_sge sge;
 	int ret = 0;
 
 	recv_wr.next = NULL;
-	recv_wr.sg_list = &sge;
-	recv_wr.num_sge = 1;
+	recv_wr.sg_list = NULL;
+	recv_wr.num_sge = 0;
 	recv_wr.wr_id = (uintptr_t) node;
-
-	sge.length = sizeof(struct flush_request);
-	sge.lkey = node->flush_request_buff_mr->lkey;
-	sge.addr = (uintptr_t) node->flush_request_buff;
 
 	ret = ibv_post_recv(node->cma_id->qp, &recv_wr, &recv_failure);
 	if (ret) {
-		printf("failed to post receive flush_request: %d\n", ret);
+		printf("failed to post receive metadata: %d\n", ret);
 	}
 	
+	return ret;
+}
+
+static int post_sends(struct benchmark_node *node)
+{
+	struct ibv_send_wr send_wr, *bad_send_wr;
+	struct ibv_sge sge;
+	int i, ret = 0;
+
+	if (!node->connected || !message_count)
+		return 0;
+
+	send_wr.next = NULL;
+	send_wr.sg_list = &sge;
+	send_wr.num_sge = 1;
+	send_wr.opcode = IBV_WR_SEND;
+	send_wr.send_flags = 0;
+	send_wr.wr_id = (unsigned long)node;
+
+	sge.length = message_size;
+	sge.lkey = node->mr->lkey;
+	sge.addr = (uintptr_t) node->mem;
+
+	for (i = 0; i < message_count && !ret; i++) {
+		ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
+		if (ret) 
+			printf("failed to post sends: %d\n", ret);
+	}
 	return ret;
 }
 
@@ -400,31 +407,6 @@ static int post_send_metadata(struct benchmark_node *node)
 	return ret;
 }
 
-static int post_send_flush(struct benchmark_node *node)
-{
-	struct ibv_send_wr send_wr, *bad_send_wr;
-	struct ibv_sge sge;
-	int i, ret = 0;
-
-	if (!node->connected)
-		return 0;
-	
-	send_wr.next = NULL;
-	send_wr.sg_list = &sge;
-	send_wr.num_sge = 1;
-	send_wr.opcode = IBV_WR_SEND;
-	send_wr.send_flags = 0;
-	send_wr.wr_id = (unsigned long)node;
-
-	sge.length = sizeof(struct flush_request);
-	sge.lkey = node->flush_request_buff_mr->lkey;
-	sge.addr = (uintptr_t) node->flush_request_buff;
-	ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
-	if (ret) 
-		printf("failed to post send flush_request: %d\n", ret);
-	return ret;
-}
-
 static int post_send_write(struct benchmark_node *node)
 {
 	struct ibv_send_wr send_wr, *bad_send_wr;
@@ -449,6 +431,40 @@ static int post_send_write(struct benchmark_node *node)
     // remote write destination
     send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
     send_wr.wr.rdma.remote_addr = node->server_metadata->address;
+
+	ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
+	if (ret) 
+		printf("failed to post send metadata: %d\n", ret);
+	return ret;
+}
+
+static int post_send_write_with_imm(struct benchmark_node *node)
+{
+	struct ibv_send_wr send_wr, *bad_send_wr;
+	struct ibv_sge sge;
+	int i, ret = 0;
+
+	if (!node->connected)
+		return 0;
+	
+	send_wr.next = NULL;
+	send_wr.sg_list = &sge;
+	send_wr.num_sge = 1;
+	send_wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+	send_wr.send_flags = 0;
+	send_wr.wr_id = (unsigned long)node;
+
+    // source
+	sge.length = message_size;
+	sge.lkey = node->src_mem_mr->lkey;
+	sge.addr = (uintptr_t) node->src_mem_mr->addr;
+
+    // remote write destination
+    send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
+    send_wr.wr.rdma.remote_addr = node->server_metadata->address;
+
+    // immediate data
+    send_wr.imm_data = 4321; // TODO: make use of it
 
 	ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
 	if (ret) 
@@ -500,11 +516,11 @@ static int addr_handler(struct benchmark_node *node)
 		ret = rdma_set_option(node->cma_id, RDMA_OPTION_ID,
 				      RDMA_OPTION_ID_TOS, &tos, sizeof tos);
 		if (ret)
-			perror("wsbenchmark: set TOS option failed");
+			perror("wibenchmark: set TOS option failed");
 	}
 	ret = rdma_resolve_route(node->cma_id, 2000);
 	if (ret) {
-		perror("wsbenchmark: resolve route failed");
+		perror("wibenchmark: resolve route failed");
 		connect_error();
 	}
 	return ret;
@@ -532,7 +548,7 @@ static int route_handler(struct benchmark_node *node)
 	conn_param.private_data_len = test.rai->ai_connect_len;
 	ret = rdma_connect(node->cma_id, &conn_param);
 	if (ret) {
-		perror("wsbenchmark: failure connecting");
+		perror("wibenchmark: failure connecting");
 		goto err;
 	}
 	return 0;
@@ -560,14 +576,13 @@ static int connect_handler(struct rdma_cm_id *cma_id)
 	if (ret)
 		goto err2;
 
-    // post first recv flush before accepting
-	ret = post_recv_flush(node);
+	ret = post_recv_imm(node);
 	if (ret)
-		goto err2;
+	 	goto err2;
 
 	ret = rdma_accept(node->cma_id, NULL);
 	if (ret) {
-		perror("wsbenchmark: failure accepting");
+		perror("wibenchmark: failure accepting");
 		goto err2;
 	}
 	return 0;
@@ -576,7 +591,7 @@ err2:
 	node->cma_id = NULL;
 	connect_error();
 err1:
-	printf("wsbenchmark: failing connection request\n");
+	printf("wibenchmark: failing connection request\n");
 	rdma_reject(cma_id, NULL, 0);
 	return ret;
 }
@@ -605,7 +620,7 @@ static int cma_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event)
 	case RDMA_CM_EVENT_CONNECT_ERROR:
 	case RDMA_CM_EVENT_UNREACHABLE:
 	case RDMA_CM_EVENT_REJECTED:
-		printf("wsbenchmark: event: %s, error: %d\n",
+		printf("wibenchmark: event: %s, error: %d\n",
 		       rdma_event_str(event->event), event->status);
 		connect_error();
 		ret = event->status;
@@ -669,20 +684,20 @@ static int alloc_nodes(void)
 
     pmem_mapped_len = malloc(sizeof(size_t) * connections);
 	if (!pmem_mapped_len) {
-		printf("wsbenchmark: unable to allocate memory for mapped len\n");
+		printf("wibenchmark: unable to allocate memory for mapped len\n");
 		return -ENOMEM;
 	}
 
 	test.nodes = malloc(sizeof *test.nodes * connections);
 	if (!test.nodes) {
-		printf("wsbenchmark: unable to allocate memory for test nodes\n");
+		printf("wibenchmark: unable to allocate memory for test nodes\n");
 		return -ENOMEM;
 	}
 	memset(test.nodes, 0, sizeof *test.nodes * connections);
 
 	test.threads = malloc(sizeof *test.threads * connections);
 	if (!test.threads) {
-		printf("wsbenchmark: unable to allocate memory for threads\n");
+		printf("wibenchmark: unable to allocate memory for threads\n");
 		return -ENOMEM;
 	}
 	memset(test.threads, 0, sizeof *test.threads * connections);
@@ -726,11 +741,11 @@ static int poll_one_wc(enum CQ_INDEX index)
 		for (done = 0; done < 1; done += ret) {
 			ret = ibv_poll_cq(test.nodes[i].cq[index], 1, wc);
 			if (ret < 0) {
-				printf("wsbenchmark: failed polling CQ: %d\n", ret);
+				printf("wibenchmark: failed polling CQ: %d\n", ret);
 				return ret;
 			}
 			if (ret > 0)
-				printf("wsbenchmark: received work completion wr_id: %lu len: %u s: %s f: %u\n",
+				printf("wibenchmark: received work completion wr_id: %lu len: %u s: %s f: %u\n",
 					wc->wr_id, wc->byte_len, ibv_wc_status_str(wc->status), wc->wc_flags);
 		}
 	}
@@ -748,12 +763,12 @@ static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
 	for (done = 0; done < n; done += ret) {
 		ret = ibv_poll_cq(node->cq[index], 8, wc);
 		if (ret < 0) {
-			printf("wsbenchmark: failed polling CQ: %d\n", ret);
+			printf("wibenchmark: failed polling CQ: %d\n", ret);
 			return ret;
 		}
 		// if (ret > 0) {
 		// 	for (i = 0; i < ret; ++i) {
-		// 		printf("wsbenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n",
+		// 		printf("wibenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n",
 		// 			node->id, wc[i].wr_id, wc[i].byte_len,
 		// 			ibv_wc_status_str(wc[i].status), wc[i].wc_flags);
 		// 	}
@@ -773,7 +788,7 @@ static int connect_events(void)
 			ret = cma_handler(event->id, event);
 			rdma_ack_cm_event(event);
 		} else {
-			perror("wsbenchmark: failure in rdma_get_cm_event in connect events");
+			perror("wibenchmark: failure in rdma_get_cm_event in connect events");
 			ret = errno;
 		}
 	}
@@ -792,7 +807,7 @@ static int disconnect_events(void)
 			ret = cma_handler(event->id, event);
 			rdma_ack_cm_event(event);
 		} else {
-			perror("wsbenchmark: failure in rdma_get_cm_event in disconnect events");
+			perror("wibenchmark: failure in rdma_get_cm_event in disconnect events");
 			ret = errno;
 		}
 	}
@@ -800,74 +815,33 @@ static int disconnect_events(void)
 	return ret;
 }
 
-// TODO change this to poll recv wc and flush
-static int process_flush_request(struct benchmark_node *node) {
-    struct ibv_cq *cq_ptr = NULL; 
-    struct benchmark_node *node_ptr;
-    int ret = -1;
-    int max_wc = 1;
-    struct ibv_wc wc[8];
-    ret = ibv_get_cq_event(
-        node->comp_channel,
-        &cq_ptr,
-        (void*)&node_ptr
-    );
-    if (ret) {
-      printf("wsbenchmark: Failed to get next CQ event due to %d \n", -errno);
-      return -errno;
-    }
-    /* Request for more notifications. */
-    ret = ibv_req_notify_cq(cq_ptr, 0);
-    if (ret) {
-      printf("wsbenchmark: Failed to request further notifications %d \n",
-                   -errno);
-      return -errno;
-    }
-
-    node_poll_n_cq(node, RECV_CQ_INDEX, 1);
-    // pmem persist
-    // TODO do something with the request
-    // received data is in node->flush_request_buff
-    if (use_pmem) pmem_persist(node->mem, message_size);
-
-    ibv_ack_cq_events(cq_ptr, 1);
-
-    ret = post_recv_flush(node);
-    if (ret) {
-        printf("wsbenchmark: post_recv_flush error %d \n", -errno);
-        return -errno;
-    }
-
-    return 0;
-}
-
 static int run_server(void)
 {
 	struct rdma_cm_id *listen_id;
 	int i, ret;
 
-	printf("wsbenchmark: starting server\n");
+	printf("wibenchmark: starting server\n");
 	ret = rdma_create_id(test.channel, &listen_id, &test, hints.ai_port_space);
 	if (ret) {
-		perror("wsbenchmark: listen request failed");
+		perror("wibenchmark: listen request failed");
 		return ret;
 	}
 
 	ret = get_rdma_addr(src_addr, dst_addr, port, &hints, &test.rai);
 	if (ret) {
-		printf("wsbenchmark: getrdmaaddr error: %s\n", gai_strerror(ret));
+		printf("wibenchmark: getrdmaaddr error: %s\n", gai_strerror(ret));
 		goto out;
 	}
 
 	ret = rdma_bind_addr(listen_id, test.rai->ai_src_addr);
 	if (ret) {
-		perror("wsbenchmark: bind address failed");
+		perror("wibenchmark: bind address failed");
 		goto out;
 	}
 
 	ret = rdma_listen(listen_id, 8);
 	if (ret) {
-		perror("wsbenchmark: failure trying to listen");
+		perror("wibenchmark: failure trying to listen");
 		goto out;
 	}
 
@@ -875,33 +849,50 @@ static int run_server(void)
 	if (ret)
 		goto out;
 
-	printf("exchanging metadata\n");
-	for (i = 0; i < connections; i++) {
-		server_set_metadata(&test.nodes[i]);
-		ret = post_send_metadata(&test.nodes[i]);
+	if (message_count) {
+		printf("exchanging metadata\n");
+		for (i = 0; i < connections; i++) {
+			server_set_metadata(&test.nodes[i]);
+			ret = post_send_metadata(&test.nodes[i]);
+			if (ret)
+				goto out;
+		}
+
+		printf("completing sends\n");
+		ret = poll_one_wc(SEND_CQ_INDEX);
 		if (ret)
 			goto out;
+		
+		printf("metadata sent\n");
 	}
 
-	printf("completing sends\n");
-	ret = poll_one_wc(SEND_CQ_INDEX);
-	if (ret)
-		goto out;
-	
-	printf("metadata sent\n");
-
-    // TODO: do it in separate threads
+    // TODO: move this to separate thread
+    // poll recv rdma with imm wc to get immediate
     while (true) {
-        for (i = 0; i < connections; i++) {
-	    	ret = process_flush_request(&test.nodes[i]);
-            if (ret) {
-                printf("error while processing flush requests errno %d", errno);
-	    		goto out;
+	    for (i = 0; i < connections; i++) {
+            struct ibv_wc wc;
+		    ret = ibv_poll_cq(test.nodes[i].cq[RECV_CQ_INDEX], 1, &wc);
+		    if (ret < 0) {
+		    	printf("wibenchmark: failed polling CQ: %d\n", ret);
+		    	return ret;
+		    }
+            if (ret == 1 && wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+		 		printf("wibenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n",
+		 			i, wc.wr_id, wc.byte_len, ibv_wc_status_str(wc.status),
+                    wc.wc_flags);
+                // persist
+                if (use_pmem) pmem_persist(test.nodes[i].mem, message_size);
+                post_recv_imm(&test.nodes[i]); // post another recv
             }
-	    }
+            if (ret == 1 && wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM) {
+                puts("something is no yes");
+                post_recv_imm(&test.nodes[i]); // post another recv
+            }
+        }
     }
 
-	ret = disconnect_events(); // wait for disconnects
+
+	ret = disconnect_events();
 
  	printf("disconnected\n");
 
@@ -922,27 +913,15 @@ void *worker(void *index)
 	while (!stop) {
 		start = get_time_ns();
 		// RDMA WRITE
-		ret = post_send_write(node);
+		ret = post_send_write_with_imm(node);
 		if (ret) {
-			printf("wsbenchmark: worker post_send_write error %d\n", ret);
+			printf("wibenchmark: worker post_send_write_with_imm error %d\n", ret);
 			return NULL;	
 		}
 		// wait for completion
 		ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
 		if (ret) {
-			printf("wsbenchmark: worker node_poll_n_cq error %d\n", ret);
-			return NULL;	
-		}
-		// RDMA SEND
-		ret = post_send_flush(node);
-		if (ret) {
-			printf("wsbenchmark: worker post_send_flush error %d\n", ret);
-			return NULL;	
-		}
-		// wait for completion
-		ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
-		if (ret) {
-			printf("wsbenchmark: worker node_poll_n_cq error %d\n", ret);
+			printf("wibenchmark: worker node_poll_n_cq error %d\n", ret);
 			return NULL;	
 		}
 		end = get_time_ns();
@@ -963,20 +942,20 @@ static int run_client(void)
 {
 	int i, ret, ret2;
 
-	printf("wsbenchmark: starting client\n");
+	printf("wibenchmark: starting client\n");
 
 	ret = get_rdma_addr(src_addr, dst_addr, port, &hints, &test.rai);
 	if (ret) {
-		printf("wsbenchmark: getaddrinfo error: %s\n", gai_strerror(ret));
+		printf("wibenchmark: getaddrinfo error: %s\n", gai_strerror(ret));
 		return ret;
 	}
 
-	printf("wsbenchmark: connecting\n");
+	printf("wibenchmark: connecting\n");
 	for (i = 0; i < connections; i++) {
 		ret = rdma_resolve_addr(test.nodes[i].cma_id, test.rai->ai_src_addr,
 					test.rai->ai_dst_addr, 2000);
 		if (ret) {
-			perror("wsbenchmark: failure getting addr");
+			perror("wibenchmark: failure getting addr");
 			connect_error();
 			return ret;
 		}
@@ -1093,7 +1072,6 @@ int main(int argc, char **argv)
 			break;
 		case 0:
 			strcpy(pmem_file_path, optarg);
-            use_pmem = true;
 			break;
 		default:
 			printf("usage: %s\n", argv[0]);
