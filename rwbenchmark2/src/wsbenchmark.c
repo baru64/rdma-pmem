@@ -269,13 +269,22 @@ static int init_node(struct benchmark_node *node)
     }
 
 	cqe = message_count ? message_count : 1;
-	node->cq[SEND_CQ_INDEX] = ibv_create_cq(node->cma_id->verbs, cqe, node, NULL, 0);
-	node->cq[RECV_CQ_INDEX] = ibv_create_cq(node->cma_id->verbs, cqe, node, NULL, 0);
+	node->cq[SEND_CQ_INDEX] = ibv_create_cq(node->cma_id->verbs, cqe, node,
+                                            NULL, 0);
+	node->cq[RECV_CQ_INDEX] = ibv_create_cq(node->cma_id->verbs, cqe, node,
+                                            node->comp_channel, 0);
 	if (!node->cq[SEND_CQ_INDEX] || !node->cq[RECV_CQ_INDEX]) {
 		ret = -ENOMEM;
 		printf("wsbenchmark: unable to create CQ\n");
 		goto out;
 	}
+
+    // request only recv cq expertiment TODO
+    if (ibv_req_notify_cq(node->cq[RECV_CQ_INDEX], 0)) {
+        fprintf(stderr, "Couldn't request CQ notification\n");
+        ret = 1;
+        goto out;
+    }
 
 	memset(&init_qp_attr, 0, sizeof init_qp_attr);
 	init_qp_attr.cap.max_send_wr = cqe;
@@ -301,6 +310,13 @@ static int init_node(struct benchmark_node *node)
 	}
 
 	print_metadata(node);
+
+	// allocate flush_request buffer and mr
+	ret = create_flush_request_buffer(node);
+	if (ret) {
+		printf("wsbenchmark: failed to create metadata buffer: %d\n", ret);
+		goto out;
+	}
 
 	// allocate buffer and create message MR
 	ret = create_message(node);
@@ -403,7 +419,6 @@ static int post_send_flush(struct benchmark_node *node)
 	sge.length = sizeof(struct flush_request);
 	sge.lkey = node->flush_request_buff_mr->lkey;
 	sge.addr = (uintptr_t) node->flush_request_buff;
-
 	ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
 	if (ret) 
 		printf("failed to post send flush_request: %d\n", ret);
@@ -545,10 +560,10 @@ static int connect_handler(struct rdma_cm_id *cma_id)
 	if (ret)
 		goto err2;
 
-	// todo remove this
-	// ret = post_recvs(node);
-	// if (ret)
-	// 	goto err2;
+    // post first recv flush before accepting
+	ret = post_recv_flush(node);
+	if (ret)
+		goto err2;
 
 	ret = rdma_accept(node->cma_id, NULL);
 	if (ret) {
@@ -789,7 +804,7 @@ static int disconnect_events(void)
 static int process_flush_request(struct benchmark_node *node) {
     struct ibv_cq *cq_ptr = NULL; 
     struct benchmark_node *node_ptr;
-    int ret = -1, i, total_wc = 0;
+    int ret = -1;
     int max_wc = 1;
     struct ibv_wc wc[8];
     ret = ibv_get_cq_event(
@@ -808,14 +823,22 @@ static int process_flush_request(struct benchmark_node *node) {
                    -errno);
       return -errno;
     }
-    node_poll_n_cq(node, RECV_CQ_INDEX, 1);
 
+    node_poll_n_cq(node, RECV_CQ_INDEX, 1);
     // pmem persist
     // TODO do something with the request
-    pmem_persist(node->mem, message_size);
+    // received data is in node->flush_request_buff
+    if (use_pmem) pmem_persist(node->mem, message_size);
 
     ibv_ack_cq_events(cq_ptr, 1);
-    return total_wc;
+
+    ret = post_recv_flush(node);
+    if (ret) {
+        printf("wsbenchmark: post_recv_flush error %d \n", -errno);
+        return -errno;
+    }
+
+    return 0;
 }
 
 static int run_server(void)
@@ -867,7 +890,16 @@ static int run_server(void)
 	
 	printf("metadata sent\n");
 
-
+    // TODO: wait for flush requests
+    while (true) {
+        for (i = 0; i < connections; i++) {
+	    	ret = process_flush_request(&test.nodes[i]);
+            if (ret) {
+                printf("error while processing flush requests errno %d", errno);
+	    		goto out;
+            }
+	    }
+    }
 
 	ret = disconnect_events(); // wait for disconnects
 
@@ -1061,6 +1093,7 @@ int main(int argc, char **argv)
 			break;
 		case 0:
 			strcpy(pmem_file_path, optarg);
+            use_pmem = true;
 			break;
 		default:
 			printf("usage: %s\n", argv[0]);
