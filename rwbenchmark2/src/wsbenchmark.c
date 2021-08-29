@@ -810,6 +810,20 @@ static int process_flush_request(struct benchmark_node *node) {
   return 0;
 }
 
+void* server_worker(void* index) {
+  int ret;
+  uint64_t start, end, current_latency;
+  struct benchmark_node *node = &test.nodes[*(int *)index];
+  while (true) {
+    ret = process_flush_request(node);
+    if (ret) {
+      printf("error while processing flush requests errno %d", errno);
+      return NULL;
+    }
+  }
+  return NULL;
+}
+
 static int run_server(void) {
   struct rdma_cm_id *listen_id;
   int i, ret;
@@ -859,17 +873,17 @@ static int run_server(void) {
   printf("metadata sent\n");
 
   // TODO: do it in separate threads
-  while (true) {
-    for (i = 0; i < connections; i++) {
-      ret = process_flush_request(&test.nodes[i]);
-      if (ret) {
-        printf("error while processing flush requests errno %d", errno);
-        goto out;
-      }
-    }
+  // run server workers
+  for (i = 0; i < connections; i++) {
+    pthread_create(&test.threads[i], NULL, server_worker,
+                   (void *)&test.nodes[i].id);
   }
 
   ret = disconnect_events(); // wait for disconnects
+
+  for (i = 0; i < connections; i++) {
+    pthread_cancel(test.threads[i]);
+  }
 
   printf("disconnected\n");
 

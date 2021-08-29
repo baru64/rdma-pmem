@@ -786,6 +786,35 @@ static int disconnect_events(void) {
   return ret;
 }
 
+void* server_worker(void* index) {
+  int ret;
+  uint64_t start, end, current_latency;
+  struct benchmark_node *node = &test.nodes[*(int *)index];
+  while (true) {
+    struct ibv_wc wc;
+    ret = ibv_poll_cq(node->cq[RECV_CQ_INDEX], 1, &wc);
+    if (ret < 0) {
+      printf("wibenchmark: failed polling CQ: %d\n", ret);
+      return NULL;
+    }
+    if (ret == 1 && wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+      // printf("wibenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n", i,
+      //        wc.wr_id, wc.byte_len, ibv_wc_status_str(wc.status),
+      //        wc.wc_flags);
+      // printf("imm data: %d\n", wc.imm_data);
+      // persist
+      if (use_pmem)
+        pmem_persist(node->mem, message_size);
+      post_recv_imm(node); // post another recv
+    }
+    if (ret == 1 && wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM) {
+      puts("something is no yes");
+      post_recv_imm(node); // post another recv
+    }
+  }
+  return NULL;
+}
+
 static int run_server(void) {
   struct rdma_cm_id *listen_id;
   int i, ret;
@@ -836,33 +865,17 @@ static int run_server(void) {
     printf("metadata sent\n");
   }
 
-  // TODO: move this to separate thread
   // poll recv rdma with imm wc to get immediate
-  while (true) {
-    for (i = 0; i < connections; i++) {
-      struct ibv_wc wc;
-      ret = ibv_poll_cq(test.nodes[i].cq[RECV_CQ_INDEX], 1, &wc);
-      if (ret < 0) {
-        printf("wibenchmark: failed polling CQ: %d\n", ret);
-        return ret;
-      }
-      if (ret == 1 && wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-        printf("wibenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n", i,
-               wc.wr_id, wc.byte_len, ibv_wc_status_str(wc.status),
-               wc.wc_flags);
-        // persist
-        if (use_pmem)
-          pmem_persist(test.nodes[i].mem, message_size);
-        post_recv_imm(&test.nodes[i]); // post another recv
-      }
-      if (ret == 1 && wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM) {
-        puts("something is no yes");
-        post_recv_imm(&test.nodes[i]); // post another recv
-      }
-    }
+  for (i = 0; i < connections; i++) {
+    pthread_create(&test.threads[i], NULL, server_worker,
+                   (void *)&test.nodes[i].id);
   }
 
-  ret = disconnect_events();
+  ret = disconnect_events(); // wait for disconnects
+
+  for (i = 0; i < connections; i++) {
+    pthread_cancel(test.threads[i]);
+  }
 
   printf("disconnected\n");
 

@@ -9,6 +9,8 @@ link_libraries(ibverbs rdmacm pthread pmem)
 
 add_executable(rwbenchmark src/rwbenchmark.c src/common.c)
 add_executable(wsbenchmark src/wsbenchmark.c src/common.c)
+add_executable(wibenchmark src/wibenchmark.c src/common.c)
 
 install(TARGETS rwbenchmark DESTINATION bin)
 install(TARGETS wsbenchmark DESTINATION bin)
+install(TARGETS wibenchmark DESTINATION bin)
