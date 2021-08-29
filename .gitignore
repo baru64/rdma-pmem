@@ -31,3 +31,6 @@ rwbenchmark/build
 rwbenchmark2/build
 */.ccls-cache
 pmdk/
+rpma/
+pmdk-1.11.0/
+pmdk-1.11.0-2/
