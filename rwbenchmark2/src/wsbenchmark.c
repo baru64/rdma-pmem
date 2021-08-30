@@ -92,6 +92,8 @@ struct timespec sleep_time;
 struct timespec prepare_time;
 struct statistics total_stats;
 char pmem_file_path[128] = {0};
+bool debug_log = true;
+bool csv_output = false;
 
 uint64_t get_time_ns() {
   struct timespec spec;
@@ -100,11 +102,18 @@ uint64_t get_time_ns() {
 }
 
 static void print_stats(struct statistics *stats) {
-  puts("ops | avg lat [ns] | avg jitter [ns] | throughput [GB/s]");
-  printf("%lu %lu %lu %f\n", stats->ops, stats->latency / stats->ops,
-         stats->jitter / (stats->ops - 1),
-         (double)stats->ops * message_size / (1024 * 1024 * 1024) * 1000000000 /
-             stats->elapsed_nanoseconds);
+  if (csv_output) {
+    printf("%lu;%lu;%lu;%f\n", stats->ops, stats->latency / stats->ops,
+           stats->jitter / (stats->ops - 1),
+           (double)stats->ops * message_size / (1024 * 1024 * 1024) *
+               1000000000 / stats->elapsed_nanoseconds);
+  } else {
+    puts("ops | avg lat [ns] | avg jitter [ns] | throughput [GB/s]");
+    printf("%lu %lu %lu %f\n", stats->ops, stats->latency / stats->ops,
+           stats->jitter / (stats->ops - 1),
+           (double)stats->ops * message_size / (1024 * 1024 * 1024) *
+               1000000000 / stats->elapsed_nanoseconds);
+  }
 }
 
 static void node_print_stats(struct benchmark_node *node) {
@@ -119,9 +128,10 @@ static void node_print_stats(struct benchmark_node *node) {
 }
 
 static void print_metadata(struct benchmark_node *node) {
-  printf("Server addr:len:key for node %d > %lu:%u:%u\n", node->id,
-         node->server_metadata->address, node->server_metadata->length,
-         node->server_metadata->key.local_key);
+  if (debug_log)
+    printf("Server addr:len:key for node %d > %lu:%u:%u\n", node->id,
+           node->server_metadata->address, node->server_metadata->length,
+           node->server_metadata->key.local_key);
 }
 
 static void print_mem(struct benchmark_node *node) {
@@ -701,7 +711,7 @@ static int poll_one_wc(enum CQ_INDEX index) {
         printf("wsbenchmark: failed polling CQ: %d\n", ret);
         return ret;
       }
-      if (ret > 0)
+      if (ret > 0 && debug_log)
         printf("wsbenchmark: received work completion wr_id: %lu len: %u s: %s "
                "f: %u\n",
                wc->wr_id, wc->byte_len, ibv_wc_status_str(wc->status),
@@ -939,14 +949,14 @@ void *worker(void *index) {
   }
   node->stats->elapsed_nanoseconds =
       get_time_ns() - node->stats->elapsed_nanoseconds;
-  node_print_stats(node);
+  if (debug_log) node_print_stats(node);
   return NULL;
 }
 
 static int run_client(void) {
   int i, ret, ret2;
 
-  printf("wsbenchmark: starting client\n");
+  if (debug_log) printf("wsbenchmark: starting client\n");
 
   ret = get_rdma_addr(src_addr, dst_addr, port, &hints, &test.rai);
   if (ret) {
@@ -954,7 +964,7 @@ static int run_client(void) {
     return ret;
   }
 
-  printf("wsbenchmark: connecting\n");
+  if (debug_log) printf("wsbenchmark: connecting\n");
   for (i = 0; i < connections; i++) {
     ret = rdma_resolve_addr(test.nodes[i].cma_id, test.rai->ai_src_addr,
                             test.rai->ai_dst_addr, 2000);
@@ -970,7 +980,7 @@ static int run_client(void) {
     goto disc;
 
   if (message_count) {
-    printf("receiving metadata\n");
+    if (debug_log) printf("receiving metadata\n");
     ret = poll_one_wc(RECV_CQ_INDEX);
     if (ret)
       goto disc;
@@ -978,7 +988,7 @@ static int run_client(void) {
     for (i = 0; i < connections; i++)
       print_metadata(&test.nodes[i]);
 
-    printf("metadata received\n");
+    if (debug_log) printf("metadata received\n");
     // run workers
     for (i = 0; i < connections; i++) {
       pthread_create(&test.threads[i], NULL, worker, (void *)&test.nodes[i].id);
@@ -1027,7 +1037,7 @@ int main(int argc, char **argv) {
   hints.ai_port_space = RDMA_PS_TCP;
 
   static struct option long_options[] = {{"pmem", required_argument, NULL, 0}};
-  while ((op = getopt_long(argc, argv, "s:b:f:P:c:C:S:t:p:a:0", long_options,
+  while ((op = getopt_long(argc, argv, "s:b:f:P:c:C:S:t:p:a:v0", long_options,
                            &option_index)) != -1) {
     switch (op) {
     case 's':
@@ -1071,6 +1081,10 @@ int main(int argc, char **argv) {
     case 'a':
       set_timeout = 1;
       timeout = (uint8_t)strtoul(optarg, NULL, 0);
+      break;
+    case 'v':
+      csv_output = true;
+      debug_log = false;
       break;
     case 0:
       strcpy(pmem_file_path, optarg);
