@@ -1029,6 +1029,8 @@ static int run_client(void) {
       total_stats.elapsed_nanoseconds +=
           test.nodes[i].stats->elapsed_nanoseconds;
     }
+    // avg time
+    total_stats.elapsed_nanoseconds = total_stats.elapsed_nanoseconds / connections;
     print_stats(&total_stats);
   }
 

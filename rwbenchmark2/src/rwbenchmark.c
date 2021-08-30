@@ -97,14 +97,14 @@ static void print_stats(struct statistics *stats) {
   if (csv_output) {
     printf("%lu;%lu;%lu;%f\n", stats->ops, stats->latency / stats->ops,
            stats->jitter / (stats->ops - 1),
-           (double)stats->ops * message_size / (1024 * 1024 * 1024) * 1000000000 /
-               stats->elapsed_nanoseconds);
+           (double)stats->ops * message_size / (1024 * 1024 * 1024) *
+               1000000000 / stats->elapsed_nanoseconds);
   } else {
     puts("ops | avg lat [ns] | avg jitter [ns] | throughput [GB/s]");
     printf("%lu %lu %lu %f\n", stats->ops, stats->latency / stats->ops,
            stats->jitter / (stats->ops - 1),
-           (double)stats->ops * message_size / (1024 * 1024 * 1024) * 1000000000 /
-               stats->elapsed_nanoseconds);
+           (double)stats->ops * message_size / (1024 * 1024 * 1024) *
+               1000000000 / stats->elapsed_nanoseconds);
   }
 }
 
@@ -909,6 +909,8 @@ static int run_client(void) {
       total_stats.elapsed_nanoseconds +=
           test.nodes[i].stats->elapsed_nanoseconds;
     }
+    // avg time
+    total_stats.elapsed_nanoseconds = total_stats.elapsed_nanoseconds / connections;
     print_stats(&total_stats);
   }
 
