@@ -1,7 +1,5 @@
 issues:
-- segfault with 4096 byte buffer
-- failed mr register with 2048 byte buffer and more than 4 connections
-- both occur only on soft-roce vm
+- fsdax not working on real pmem
 todo:
-- add pmem buffer
-- add option to change mem/pmem
+- run_benchmarks and make_charts scripts
+- make rpma and librpmem benchmarks
