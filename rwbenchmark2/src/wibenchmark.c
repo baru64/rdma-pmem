@@ -638,7 +638,7 @@ static void destroy_node(struct benchmark_node *node) {
 
   if (node->mem) {
     ibv_dereg_mr(node->mr);
-    free(node->mem);
+    if (!use_pmem) free(node->mem);
   }
 
   if (node->src_mem) {
@@ -816,10 +816,6 @@ void* server_worker(void* index) {
         pmem_persist(node->mem, message_size);
       post_recv_imm(node); // post another recv
     }
-    if (ret == 1 && wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM) {
-      puts("something is no yes");
-      post_recv_imm(node); // post another recv
-    }
   }
   return NULL;
 }
@@ -928,7 +924,7 @@ void *worker(void *index) {
   }
   node->stats->elapsed_nanoseconds =
       get_time_ns() - node->stats->elapsed_nanoseconds;
-  node_print_stats(node);
+  if (debug_log) node_print_stats(node);
   return NULL;
 }
 
@@ -1104,12 +1100,12 @@ int main(int argc, char **argv) {
     ret = run_server();
   }
 
-  printf("test complete\n");
+  if (debug_log) printf("test complete\n");
   destroy_nodes();
   rdma_destroy_event_channel(test.channel);
   if (test.rai)
     rdma_freeaddrinfo(test.rai);
 
-  printf("return status %d\n", ret);
+  if (debug_log) printf("return status %d\n", ret);
   return ret;
 }

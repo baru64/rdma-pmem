@@ -625,7 +625,7 @@ static void destroy_node(struct benchmark_node *node) {
 
   if (node->mem) {
     ibv_dereg_mr(node->mr);
-    free(node->mem);
+    if (!use_pmem) free(node->mem);
   }
 
   if (node->src_mem) {
@@ -746,6 +746,23 @@ static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
   return 0;
 }
 
+static int node_get_wc(struct benchmark_node *node, enum CQ_INDEX index,
+                          struct ibv_wc* wc) {
+  int done, i, ret;
+
+  if (!node->connected)
+    return 0;
+
+  for (done = 0; done < 1; done += ret) {
+    ret = ibv_poll_cq(node->cq[index], 1, wc);
+    if (ret < 0) {
+      printf("wsbenchmark: failed polling CQ: %d\n", ret);
+      return ret;
+    }
+  }
+  return 0;
+}
+
 static int connect_events(void) {
   struct rdma_cm_event *event;
   int ret = 0;
@@ -788,7 +805,7 @@ static int process_flush_request(struct benchmark_node *node) {
   struct benchmark_node *node_ptr;
   int ret = -1;
   int max_wc = 1;
-  struct ibv_wc wc[8];
+  struct ibv_wc wc;
   ret = ibv_get_cq_event(node->comp_channel, &cq_ptr, (void *)&node_ptr);
   if (ret) {
     printf("wsbenchmark: Failed to get next CQ event due to %d \n", -errno);
@@ -802,19 +819,21 @@ static int process_flush_request(struct benchmark_node *node) {
     return -errno;
   }
 
-  node_poll_n_cq(node, RECV_CQ_INDEX, 1);
+  node_get_wc(node, RECV_CQ_INDEX, &wc);
   // pmem persist
   // TODO do something with the request
   // received data is in node->flush_request_buff
-  if (use_pmem)
+  if (use_pmem && wc.opcode == IBV_WC_RECV)
     pmem_persist(node->mem, message_size);
 
   ibv_ack_cq_events(cq_ptr, 1);
 
-  ret = post_recv_flush(node);
-  if (ret) {
-    printf("wsbenchmark: post_recv_flush error %d \n", -errno);
-    return -errno;
+  if (wc.opcode == IBV_WC_RECV) {
+    ret = post_recv_flush(node);
+    if (ret) {
+      printf("wsbenchmark: post_recv_flush error %d \n", -errno);
+      return -errno;
+    }
   }
 
   return 0;
@@ -1126,12 +1145,12 @@ int main(int argc, char **argv) {
     ret = run_server();
   }
 
-  printf("test complete\n");
+  if (debug_log) printf("test complete\n");
   destroy_nodes();
   rdma_destroy_event_channel(test.channel);
   if (test.rai)
     rdma_freeaddrinfo(test.rai);
 
-  printf("return status %d\n", ret);
+  if (debug_log) printf("return status %d\n", ret);
   return ret;
 }
