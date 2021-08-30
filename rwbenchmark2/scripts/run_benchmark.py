@@ -40,7 +40,6 @@ def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: in
 
     with open("results.json", "r") as f:
         RESULTS = json.load(f)
-        print("in results: ", RESULTS)
         if not program in RESULTS:
             RESULTS[program] = {}
         RESULTS[program][threadnum] = {
@@ -49,7 +48,6 @@ def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: in
             "jitter": int(result[2]),
             "throughput": float(result[3]),
         }
-        print(RESULTS)
 
     with open("results.json", "w") as f:
         json.dump(RESULTS, f)
@@ -105,4 +103,4 @@ if __name__ == "__main__":
             clientproc.start()
 
             clientproc.join()
-            serverproc.join()
+            serverproc.kill()
