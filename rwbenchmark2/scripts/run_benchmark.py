@@ -7,8 +7,9 @@ from multiprocessing import Process
 from time import sleep
 from pathlib import Path
 
-build_path = "/home/vagrant/host/rwbenchmark2/build"
-benchmark_secs = str(10)
+# build_path = "/home/vagrant/host/rwbenchmark2/build"
+build_path = "/home/inf126145/code/rdma-pmem/rwbenchmark2/build"
+benchmark_secs = str(30)
 
 
 def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: int):
@@ -25,7 +26,7 @@ def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: in
         "-c",
         str(threadnum),
         "-t",
-        benchmark_secs,
+        benchmark_secs
     ]
     output = subprocess.check_output(args=args, stderr=sys.stderr)
     result = output.decode("utf-8").strip().split(";")
@@ -61,7 +62,7 @@ def server(
     serveraddr: str,
     memsize: str,
     threadnum: int,
-    pmem: Optional[str] = "/dev/dax0.0",
+    pmem: Optional[str] = "/dev/dax0.1",
 ):
     """Runs server part of benchmark"""
     args = [
@@ -75,22 +76,22 @@ def server(
         "-c",
         str(threadnum),
         "--pmem",
-        pmem,
+        pmem
     ]
     subprocess.run(args=args, stdout=sys.stdout, stderr=sys.stderr)
 
 
-benchmarks = ["rwbenchmark", "wsbenchmark", "wibenchmark"]
+benchmarks = ["rwbenchmark", "wsbenchmark", "wibenchmark", "rbenchmark", "wbenchmark"]
 # benchmarks = ["rwbenchmark"]
 
 if __name__ == "__main__":
-    client_node = "node1"
-    server_node = "node2"
-    server_addr = "192.168.33.11"
+    client_node = "pmem-4"
+    server_node = "pmem-3"
+    server_addr = "10.10.0.123"
 
-    for mem_size in ["1024"]:
+    for mem_size in ["512", "1024", "2048", "4096", "8192", "16384", "32768", "65536"]:
         for program in benchmarks:
-            for threadnum in [1, 2, 4]:
+            for threadnum in [1, 2, 4, 8, 12, 16]:
                 clientproc = Process(
                     target=client,
                     args=(program, client_node, server_addr, mem_size, threadnum),
