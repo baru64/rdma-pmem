@@ -849,10 +849,22 @@ void* server_worker(void* index) {
   uint64_t start, end, current_latency;
   struct benchmark_node *node = &test.nodes[*(int *)index];
   while (true) {
-    ret = process_flush_request(node);
-    if (ret) {
-      printf("error while processing flush requests errno %d", errno);
+    // ret = process_flush_request(node);
+    // if (ret) {
+    //   printf("error while processing flush requests errno %d", errno);
+    //   return NULL;
+    // }
+    struct ibv_wc wc;
+    ret = ibv_poll_cq(node->cq[RECV_CQ_INDEX], 1, &wc);
+    if (ret < 0) {
+      printf("wibenchmark: failed polling CQ: %d\n", ret);
       return NULL;
+    }
+    if (ret == 1 && wc.opcode == IBV_WC_RECV) {
+      // persist
+      if (use_pmem)
+        pmem_persist(node->mem, message_size);
+      post_recv_flush(node); // post another recv
     }
   }
   return NULL;
