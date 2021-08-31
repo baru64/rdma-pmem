@@ -40,9 +40,11 @@ def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: in
 
     with open("results.json", "r") as f:
         RESULTS = json.load(f)
-        if not program in RESULTS:
-            RESULTS[program] = {}
-        RESULTS[program][threadnum] = {
+        if not mem_size in RESULTS:
+            RESULTS[mem_size] = {}
+        if not program in RESULTS[mem_size]:
+            RESULTS[mem_size][program] = {}
+        RESULTS[mem_size][program][threadnum] = {
             "ops": int(result[0]),
             "latency": int(result[1]),
             "jitter": int(result[2]),
@@ -84,23 +86,23 @@ benchmarks = ["rwbenchmark", "wsbenchmark", "wibenchmark"]
 if __name__ == "__main__":
     client_node = "node1"
     server_node = "node2"
-    mem_size = str(1024)
     server_addr = "192.168.33.11"
 
-    for program in benchmarks:
-        for threadnum in [1, 2, 4]:
-            clientproc = Process(
-                target=client,
-                args=(program, client_node, server_addr, mem_size, threadnum),
-            )
-            serverproc = Process(
-                target=server,
-                args=(program, server_node, server_addr, mem_size, threadnum),
-            )
+    for mem_size in ["1024"]:
+        for program in benchmarks:
+            for threadnum in [1, 2, 4]:
+                clientproc = Process(
+                    target=client,
+                    args=(program, client_node, server_addr, mem_size, threadnum),
+                )
+                serverproc = Process(
+                    target=server,
+                    args=(program, server_node, server_addr, mem_size, threadnum),
+                )
 
-            serverproc.start()
-            sleep(0.1)
-            clientproc.start()
+                serverproc.start()
+                sleep(0.1)
+                clientproc.start()
 
-            clientproc.join()
-            serverproc.kill()
+                clientproc.join()
+                serverproc.kill()

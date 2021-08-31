@@ -3,10 +3,11 @@ import json
 
 import matplotlib.pyplot as plt
 
-results = {}
+all_results = {}
 figures = ["throughput", "latency", "jitter"]
 with open("results.json", "r") as f:
-    results: dict = json.load(f)
+    all_results: dict = json.load(f)
+results = all_results["1024"]
 for figure in figures:
     fig, ax = plt.subplots()
     for benchmark in results.keys():

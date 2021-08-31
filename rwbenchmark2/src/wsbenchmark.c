@@ -83,7 +83,7 @@ static struct rdma_addrinfo hints;
 static uint8_t set_timeout;
 static uint8_t timeout;
 static size_t metadata_size = sizeof(struct rdma_buffer_attr);
-static size_t *pmem_mapped_len;
+static size_t pmem_mapped_len;
 int is_pmem;
 atomic_bool begin = false;
 atomic_bool stop = false;
@@ -94,6 +94,7 @@ struct statistics total_stats;
 char pmem_file_path[128] = {0};
 bool debug_log = true;
 bool csv_output = false;
+void *pmem;
 
 uint64_t get_time_ns() {
   struct timespec spec;
@@ -148,9 +149,7 @@ static int create_message(struct benchmark_node *node) {
 
   // buffer for rdma operations
   if (use_pmem) {
-    node->mem =
-        pmem_map_file(pmem_file_path, 0 /* len */, 0 /* flags */, 0 /* mode */,
-                      &pmem_mapped_len[node->id], &is_pmem);
+    node->mem = pmem + message_size*node->id;
     if (node->mem == NULL) {
       printf("failed pmem allocation\n");
       return -1;
@@ -652,12 +651,6 @@ static void destroy_node(struct benchmark_node *node) {
 static int alloc_nodes(void) {
   int ret, i;
 
-  pmem_mapped_len = malloc(sizeof(size_t) * connections);
-  if (!pmem_mapped_len) {
-    printf("wsbenchmark: unable to allocate memory for mapped len\n");
-    return -ENOMEM;
-  }
-
   test.nodes = malloc(sizeof *test.nodes * connections);
   if (!test.nodes) {
     printf("wsbenchmark: unable to allocate memory for test nodes\n");
@@ -679,6 +672,18 @@ static int alloc_nodes(void) {
                            hints.ai_port_space);
       if (ret)
         goto err;
+    }
+  }
+  if (use_pmem) {
+    pmem = pmem_map_file(pmem_file_path, 0 /* len */, 0 /* flags */, 0 /* mode */,
+                         &pmem_mapped_len, &is_pmem);
+    if (!pmem) {
+      printf("rwbenchmark: unable to allocate persistent memory %d\n", errno);
+      goto err;
+    }
+    if (pmem_mapped_len < (message_size*connections)) {
+      printf("rwbenchmark: not enough persistent memory %d\n", errno);
+      goto err;
     }
   }
   return 0;
