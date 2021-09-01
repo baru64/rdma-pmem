@@ -3,6 +3,8 @@ import json
 
 import matplotlib.pyplot as plt
 
+plt.rcParams.update({'font.size': 5})
+
 all_results = {}
 memsizes = ["512", "1024", "2048", "4096", "8192", "16384", "32768", "65536"]
 figures = ["throughput", "latency", "jitter"]
@@ -24,11 +26,14 @@ for thread in ["1", "2", "4", "8", "12"]:
         fig, ax = plt.subplots()
         for benchmark, y in benchmarks.items():
             x = [int(m) for m in memsizes]
-            ax.plot(x, y, label=benchmark)
+            ax.plot(x, y, '-o', label=benchmark)
+            for i,j in zip(x,y):
+                ax.annotate(str(j),xy=(i,j))
             ax.set_xlabel('bytes')
             ax.set_ylabel(labels[figure])
             ax.set_title(f"{titles[figure]}: {thread} connection(s)")
             ax.legend()
+            ax.grid(True)
         fig.tight_layout()
         fig.savefig(f"results/{figure}_memsize{thread}.pdf")
 
@@ -42,7 +47,10 @@ for j, memsize in enumerate(memsizes):
             x = sorted([int(k) for k in results[benchmark].keys()])
             for thread in x:
                 y.append(results[benchmark][str(thread)].get(figure))
-            ax[i].plot(x, y, label=benchmark)
+            ax[i].plot(x, y,'-o', label=benchmark)
+            for k,l in zip(x,y):
+                ax[i].annotate(str(l),xy=(k,l))
+            ax[i].grid(True)
 
         ax[i].set_xlabel('connections')
         ax[i].set_ylabel(labels[figure])
