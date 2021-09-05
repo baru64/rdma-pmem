@@ -9,7 +9,7 @@ from pathlib import Path
 
 # build_path = "/home/vagrant/host/rwbenchmark2/build"
 build_path = "/home/inf126145/code/rdma-pmem/rwbenchmark2/build"
-benchmark_secs = str(30)
+benchmark_secs = str(60)
 
 
 def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: int):
@@ -45,12 +45,22 @@ def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: in
             RESULTS[mem_size] = {}
         if not program in RESULTS[mem_size]:
             RESULTS[mem_size][program] = {}
-        RESULTS[mem_size][program][threadnum] = {
-            "ops": int(result[0]),
-            "latency": int(result[1]),
-            "jitter": int(result[2]),
-            "throughput": float(result[3]),
-        }
+        if program == "wsbenchmark_send_lat":
+            RESULTS[mem_size][program][threadnum] = {
+                "ops": int(result[0]),
+                "latency": int(result[1]),
+                "jitter": int(result[2]),
+                "throughput": float(result[3]),
+                "send_latency": int(result[4]),
+                "send_jitter": int(result[5]),
+            }
+        else:
+            RESULTS[mem_size][program][threadnum] = {
+                "ops": int(result[0]),
+                "latency": int(result[1]),
+                "jitter": int(result[2]),
+                "throughput": float(result[3]),
+            }
 
     with open("results.json", "w") as f:
         json.dump(RESULTS, f)
@@ -78,10 +88,23 @@ def server(
         "--pmem",
         pmem
     ]
+    if program in ["wbenchmark", "rbenchmark"]:
+        args = [
+            "ssh",
+            node,
+            f"{build_path}/{program}",
+            "-b",
+            serveraddr,
+            "-S",
+            memsize,
+            "-c",
+            str(threadnum)
+        ]
     subprocess.run(args=args, stdout=sys.stdout, stderr=sys.stderr)
 
 
-benchmarks = ["rwbenchmark", "wsbenchmark", "wibenchmark", "rbenchmark", "wbenchmark"]
+benchmarks = ["rwbenchmark", "wsbenchmark_send_lat", "wibenchmark", "rbenchmark", "wbenchmark"]
+mem_sizes = ["256", "512", "1024", "2048", "4096", "8192", "12288", "16384", "20480", "24576", "32768", "65536"]
 # benchmarks = ["rwbenchmark"]
 
 if __name__ == "__main__":
@@ -89,7 +112,7 @@ if __name__ == "__main__":
     server_node = "pmem-3"
     server_addr = "10.10.0.123"
 
-    for mem_size in ["512", "1024", "2048", "4096", "8192", "16384", "32768", "65536"]:
+    for mem_size in mem_sizes:
         for program in benchmarks:
             for threadnum in [1, 2, 4, 8, 12, 16]:
                 clientproc = Process(
