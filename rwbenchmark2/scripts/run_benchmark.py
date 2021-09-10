@@ -103,7 +103,7 @@ def server(
     subprocess.run(args=args, stdout=sys.stdout, stderr=sys.stderr)
 
 
-benchmarks = ["rwbenchmark", "wsbenchmark_send_lat", "wibenchmark", "rbenchmark", "wbenchmark"]
+benchmarks = ["wrbenchmark", "wsbenchmark_send_lat", "wibenchmark", "rbenchmark", "wbenchmark"]
 mem_sizes = ["256", "512", "1024", "2048", "4096", "8192", "12288", "16384", "20480", "24576", "32768", "65536"]
 # benchmarks = ["rwbenchmark"]
 
