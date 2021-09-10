@@ -27,8 +27,13 @@ struct __attribute((packed)) rdma_buffer_attr {
 };
 
 struct __attribute((packed)) flush_request {
-  uint64_t address; // a nie index??
+  uint64_t address; // or index??
   uint32_t length;
+};
+
+struct __attribute((packed)) flush_notification {
+  uint64_t address; // or index / write id
+  uint8_t status; // > 0 error, == 0 success
 };
 
 struct statistics {
@@ -49,9 +54,11 @@ struct benchmark_node {
   struct ibv_mr *src_mem_mr;
   struct ibv_mr *server_metadata_mr;
   struct ibv_mr *flush_request_buff_mr;
+  struct ibv_mr *flush_notification_buff_mr;
   struct statistics *stats;
   struct rdma_buffer_attr *server_metadata;
   struct flush_request *flush_request_buff;
+  struct flush_notification *flush_notification_buff;
   struct ibv_comp_channel *comp_channel;
   void *src_mem;
   void *mem;
@@ -222,7 +229,7 @@ err:
   return -1;
 }
 
-static int create_flush_request_buffer(struct benchmark_node *node) {
+static int create_flush_buffers(struct benchmark_node *node) {
   node->flush_request_buff = calloc(sizeof(struct flush_request), 1);
   if (!node->flush_request_buff) {
     printf("failed flush_request_buff allocation\n");
@@ -236,9 +243,23 @@ static int create_flush_request_buffer(struct benchmark_node *node) {
     goto err;
   }
 
+  node->flush_notification_buff = calloc(sizeof(struct flush_notification), 1);
+  if (!node->flush_notification_buff) {
+    printf("failed flush_notification_buff allocation\n");
+    return -1;
+  }
+  node->flush_notification_buff_mr =
+      ibv_reg_mr(node->pd, node->flush_notification_buff,
+                 sizeof(struct flush_notification), IBV_ACCESS_LOCAL_WRITE);
+  if (!node->flush_notification_buff_mr) {
+    printf("failed to reg flush_notification_buff_mr\n");
+    goto err;
+  }
+
   return 0;
 err:
   free(node->flush_request_buff);
+  free(node->flush_notification_buff);
   return -1;
 }
 
@@ -311,7 +332,7 @@ static int init_node(struct benchmark_node *node) {
   print_metadata(node);
 
   // allocate flush_request buffer and mr
-  ret = create_flush_request_buffer(node);
+  ret = create_flush_buffers(node);
   if (ret) {
     printf("wsbenchmark: failed to create metadata buffer: %d\n", ret);
     goto out;
@@ -371,7 +392,54 @@ static int post_recv_flush(struct benchmark_node *node) {
   return ret;
 }
 
+static int post_recv_notification(struct benchmark_node *node) {
+  struct ibv_recv_wr recv_wr, *recv_failure;
+  struct ibv_sge sge;
+  int ret = 0;
+
+  recv_wr.next = NULL;
+  recv_wr.sg_list = &sge;
+  recv_wr.num_sge = 1;
+  recv_wr.wr_id = (uintptr_t)node;
+
+  sge.length = sizeof(struct flush_notification);
+  sge.lkey = node->flush_notification_buff_mr->lkey;
+  sge.addr = (uintptr_t)node->flush_notification_buff;
+
+  ret = ibv_post_recv(node->cma_id->qp, &recv_wr, &recv_failure);
+  if (ret) {
+    printf("failed to post receive flush_notification: %d\n", ret);
+  }
+
+  return ret;
+}
+
 static int post_send_metadata(struct benchmark_node *node) {
+  struct ibv_send_wr send_wr, *bad_send_wr;
+  struct ibv_sge sge;
+  int i, ret = 0;
+
+  if (!node->connected)
+    return 0;
+
+  send_wr.next = NULL;
+  send_wr.sg_list = &sge;
+  send_wr.num_sge = 1;
+  send_wr.opcode = IBV_WR_SEND;
+  send_wr.send_flags = 0;
+  send_wr.wr_id = (unsigned long)node;
+
+  sge.length = metadata_size;
+  sge.lkey = node->server_metadata_mr->lkey;
+  sge.addr = (uintptr_t)node->server_metadata;
+
+  ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
+  if (ret)
+    printf("failed to post send metadata: %d\n", ret);
+  return ret;
+}
+
+static int post_send_notification(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
   int i, ret = 0;
@@ -849,21 +917,21 @@ void* server_worker(void* index) {
   uint64_t start, end, current_latency;
   struct benchmark_node *node = &test.nodes[*(int *)index];
   while (true) {
-    // ret = process_flush_request(node);
-    // if (ret) {
-    //   printf("error while processing flush requests errno %d", errno);
-    //   return NULL;
-    // }
     struct ibv_wc wc;
     ret = ibv_poll_cq(node->cq[RECV_CQ_INDEX], 1, &wc);
     if (ret < 0) {
-      printf("wibenchmark: failed polling CQ: %d\n", ret);
+      printf("wsbenchmark: failed polling CQ: %d\n", ret);
       return NULL;
     }
     if (ret == 1 && wc.opcode == IBV_WC_RECV) {
       // persist
       if (use_pmem)
         pmem_persist(node->mem, message_size);
+      ret = post_send_notification(node);
+      if (ret) {
+        printf("wsbenchmark: worker post_send_notification error %d\n", ret);
+        return NULL;
+      }
       post_recv_flush(node); // post another recv
     }
   }
@@ -955,10 +1023,16 @@ void *worker(void *index) {
       printf("wsbenchmark: worker post_send_write error %d\n", ret);
       return NULL;
     }
-    // wait for completion
+    // wait for WRITE completion
     ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
     if (ret) {
       printf("wsbenchmark: worker node_poll_n_cq error %d\n", ret);
+      return NULL;
+    }
+    // post recv for flush notification
+    ret = post_recv_notification(node);
+    if (ret) {
+      printf("wsbenchmark: worker post_recv_notification error %d\n", ret);
       return NULL;
     }
     // RDMA SEND
@@ -967,8 +1041,15 @@ void *worker(void *index) {
       printf("wsbenchmark: worker post_send_flush error %d\n", ret);
       return NULL;
     }
-    // wait for completion
+    // wait for SEND completion
     ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
+    if (ret) {
+      printf("wsbenchmark: worker node_poll_n_cq error %d\n", ret);
+      return NULL;
+    }
+    // TODO: handle notification status!
+    // wait for RECV notification
+    ret = node_poll_n_cq(node, RECV_CQ_INDEX, 1);
     if (ret) {
       printf("wsbenchmark: worker node_poll_n_cq error %d\n", ret);
       return NULL;
