@@ -26,9 +26,9 @@ struct __attribute((packed)) rdma_buffer_attr {
   } key;
 };
 
-struct __attribute((packed)) flush_request {
-  uint64_t address;
-  uint32_t length;
+struct __attribute((packed)) flush_notification {
+  uint64_t address; // or index / write id
+  uint8_t status; // > 0 error, == 0 success
 };
 
 struct statistics {
@@ -48,8 +48,10 @@ struct benchmark_node {
   struct ibv_mr *mr;
   struct ibv_mr *src_mem_mr;
   struct ibv_mr *server_metadata_mr;
+  struct ibv_mr *flush_notification_buff_mr;
   struct statistics *stats;
   struct rdma_buffer_attr *server_metadata;
+  struct flush_notification *flush_notification_buff;
   void *src_mem;
   void *mem;
 };
@@ -218,6 +220,26 @@ err:
   return -1;
 }
 
+static int create_flush_buffers(struct benchmark_node *node) {
+  node->flush_notification_buff = calloc(sizeof(struct flush_notification), 1);
+  if (!node->flush_notification_buff) {
+    printf("failed flush_notification_buff allocation\n");
+    return -1;
+  }
+  node->flush_notification_buff_mr =
+      ibv_reg_mr(node->pd, node->flush_notification_buff,
+                 sizeof(struct flush_notification), IBV_ACCESS_LOCAL_WRITE);
+  if (!node->flush_notification_buff_mr) {
+    printf("failed to reg flush_notification_buff_mr\n");
+    goto err;
+  }
+
+  return 0;
+err:
+  free(node->flush_notification_buff);
+  return -1;
+}
+
 static int init_node(struct benchmark_node *node) {
   struct ibv_qp_init_attr init_qp_attr;
   int cqe, ret;
@@ -272,6 +294,13 @@ static int init_node(struct benchmark_node *node) {
 
   print_metadata(node);
 
+  // allocate flush_notification buffer and mr
+  ret = create_flush_buffers(node);
+  if (ret) {
+    printf("wibenchmark: failed to create metadata buffer: %d\n", ret);
+    goto out;
+  }
+
   // allocate buffer and create message MR
   ret = create_message(node);
   if (ret) {
@@ -279,33 +308,6 @@ static int init_node(struct benchmark_node *node) {
     goto out;
   }
 out:
-  return ret;
-}
-
-static int post_recvs(struct benchmark_node *node) {
-  struct ibv_recv_wr recv_wr, *recv_failure;
-  struct ibv_sge sge;
-  int i, ret = 0;
-
-  if (!message_count)
-    return 0;
-
-  recv_wr.next = NULL;
-  recv_wr.sg_list = &sge;
-  recv_wr.num_sge = 1;
-  recv_wr.wr_id = (uintptr_t)node;
-
-  sge.length = message_size;
-  sge.lkey = node->mr->lkey;
-  sge.addr = (uintptr_t)node->mem;
-
-  for (i = 0; i < message_count && !ret; i++) {
-    ret = ibv_post_recv(node->cma_id->qp, &recv_wr, &recv_failure);
-    if (ret) {
-      printf("failed to post receives: %d\n", ret);
-      break;
-    }
-  }
   return ret;
 }
 
@@ -349,30 +351,25 @@ static int post_recv_imm(struct benchmark_node *node) {
   return ret;
 }
 
-static int post_sends(struct benchmark_node *node) {
-  struct ibv_send_wr send_wr, *bad_send_wr;
+static int post_recv_notification(struct benchmark_node *node) {
+  struct ibv_recv_wr recv_wr, *recv_failure;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
-  if (!node->connected || !message_count)
-    return 0;
+  recv_wr.next = NULL;
+  recv_wr.sg_list = &sge;
+  recv_wr.num_sge = 1;
+  recv_wr.wr_id = (uintptr_t)node;
 
-  send_wr.next = NULL;
-  send_wr.sg_list = &sge;
-  send_wr.num_sge = 1;
-  send_wr.opcode = IBV_WR_SEND;
-  send_wr.send_flags = 0;
-  send_wr.wr_id = (unsigned long)node;
+  sge.length = sizeof(struct flush_notification);
+  sge.lkey = node->flush_notification_buff_mr->lkey;
+  sge.addr = (uintptr_t)node->flush_notification_buff;
 
-  sge.length = message_size;
-  sge.lkey = node->mr->lkey;
-  sge.addr = (uintptr_t)node->mem;
-
-  for (i = 0; i < message_count && !ret; i++) {
-    ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
-    if (ret)
-      printf("failed to post sends: %d\n", ret);
+  ret = ibv_post_recv(node->cma_id->qp, &recv_wr, &recv_failure);
+  if (ret) {
+    printf("failed to post receive flush_notification: %d\n", ret);
   }
+
   return ret;
 }
 
@@ -394,36 +391,6 @@ static int post_send_metadata(struct benchmark_node *node) {
   sge.length = metadata_size;
   sge.lkey = node->server_metadata_mr->lkey;
   sge.addr = (uintptr_t)node->server_metadata;
-
-  ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
-  if (ret)
-    printf("failed to post send metadata: %d\n", ret);
-  return ret;
-}
-
-static int post_send_write(struct benchmark_node *node) {
-  struct ibv_send_wr send_wr, *bad_send_wr;
-  struct ibv_sge sge;
-  int i, ret = 0;
-
-  if (!node->connected)
-    return 0;
-
-  send_wr.next = NULL;
-  send_wr.sg_list = &sge;
-  send_wr.num_sge = 1;
-  send_wr.opcode = IBV_WR_RDMA_WRITE;
-  send_wr.send_flags = 0;
-  send_wr.wr_id = (unsigned long)node;
-
-  // source
-  sge.length = message_size;
-  sge.lkey = node->src_mem_mr->lkey;
-  sge.addr = (uintptr_t)node->src_mem_mr->addr;
-
-  // remote write destination
-  send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
-  send_wr.wr.rdma.remote_addr = node->server_metadata->address;
 
   ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
   if (ret)
@@ -464,7 +431,7 @@ static int post_send_write_with_imm(struct benchmark_node *node) {
   return ret;
 }
 
-static int post_send_read(struct benchmark_node *node) {
+static int post_send_notification(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
   int i, ret = 0;
@@ -475,18 +442,13 @@ static int post_send_read(struct benchmark_node *node) {
   send_wr.next = NULL;
   send_wr.sg_list = &sge;
   send_wr.num_sge = 1;
-  send_wr.opcode = IBV_WR_RDMA_READ;
+  send_wr.opcode = IBV_WR_SEND;
   send_wr.send_flags = 0;
-  send_wr.wr_id = (unsigned long)node;
+  send_wr.wr_id = (unsigned long)node+100;
 
-  // destination
-  sge.length = message_size;
-  sge.lkey = node->mr->lkey;
-  sge.addr = (uintptr_t)node->mem;
-
-  // remote read source
-  send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
-  send_wr.wr.rdma.remote_addr = node->server_metadata->address;
+  sge.length = sizeof(struct flush_notification);
+  sge.lkey = node->flush_notification_buff_mr->lkey;
+  sge.addr = (uintptr_t)node->flush_notification_buff;
 
   ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
   if (ret)
@@ -812,14 +774,24 @@ void* server_worker(void* index) {
       return NULL;
     }
     if (ret == 1 && wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-      // printf("wibenchmark: node %d wc wr_id: %lu len: %u s: %s f: %u\n", i,
-      //        wc.wr_id, wc.byte_len, ibv_wc_status_str(wc.status),
-      //        wc.wc_flags);
-      // printf("imm data: %d\n", wc.imm_data);
       // persist
       if (use_pmem)
         pmem_persist(node->mem, message_size);
-      post_recv_imm(node); // post another recv
+      ret = post_recv_imm(node); // post another recv
+      if (ret) {
+        printf("wibenchmark: worker post_recv_imm error %d\n", ret);
+        return NULL;
+      }
+      ret = post_send_notification(node);
+      if (ret) {
+        printf("wibenchmark: worker post_send_notification error %d\n", ret);
+        return NULL;
+      }
+      ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
+      if (ret) {
+        printf("wibenchmark: worker node_poll_n_cq error %d\n", ret);
+        return NULL;
+      }
     }
   }
   return NULL;
@@ -905,6 +877,12 @@ void *worker(void *index) {
 
   while (!stop) {
     start = get_time_ns();
+    // post recv for flush notification
+    ret = post_recv_notification(node);
+    if (ret) {
+      printf("wibenchmark: worker post_recv_notification error %d\n", ret);
+      return NULL;
+    }
     // RDMA WRITE
     ret = post_send_write_with_imm(node);
     if (ret) {
@@ -913,6 +891,13 @@ void *worker(void *index) {
     }
     // wait for completion
     ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
+    if (ret) {
+      printf("wibenchmark: worker node_poll_n_cq error %d\n", ret);
+      return NULL;
+    }
+    // TODO: handle notification status!
+    // wait for RECV notification
+    ret = node_poll_n_cq(node, RECV_CQ_INDEX, 1);
     if (ret) {
       printf("wibenchmark: worker node_poll_n_cq error %d\n", ret);
       return NULL;
