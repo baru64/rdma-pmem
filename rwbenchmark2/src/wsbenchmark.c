@@ -143,7 +143,6 @@ static void print_metadata(struct benchmark_node *node) {
 }
 
 static void print_mem(struct benchmark_node *node) {
-  puts("print mem");
   printf("MEM node %d > %.99s\n", node->id, (char *)node->mem);
 }
 
@@ -288,7 +287,8 @@ static int init_node(struct benchmark_node *node) {
     goto out;
   }
 
-  cqe = message_count ? message_count : 1;
+  // cqe = message_count ? message_count : 1;
+  cqe = 1;
   node->cq[SEND_CQ_INDEX] =
       ibv_create_cq(node->cma_id->verbs, cqe, node, NULL, 0);
   node->cq[RECV_CQ_INDEX] =
@@ -378,7 +378,7 @@ static int post_recv_flush(struct benchmark_node *node) {
   recv_wr.next = NULL;
   recv_wr.sg_list = &sge;
   recv_wr.num_sge = 1;
-  recv_wr.wr_id = (uintptr_t)node;
+  recv_wr.wr_id = (uintptr_t)node+100;
 
   sge.length = sizeof(struct flush_request);
   sge.lkey = node->flush_request_buff_mr->lkey;
@@ -400,7 +400,7 @@ static int post_recv_notification(struct benchmark_node *node) {
   recv_wr.next = NULL;
   recv_wr.sg_list = &sge;
   recv_wr.num_sge = 1;
-  recv_wr.wr_id = (uintptr_t)node;
+  recv_wr.wr_id = (uintptr_t)node+200;
 
   sge.length = sizeof(struct flush_notification);
   sge.lkey = node->flush_notification_buff_mr->lkey;
@@ -452,11 +452,11 @@ static int post_send_notification(struct benchmark_node *node) {
   send_wr.num_sge = 1;
   send_wr.opcode = IBV_WR_SEND;
   send_wr.send_flags = 0;
-  send_wr.wr_id = (unsigned long)node;
+  send_wr.wr_id = (unsigned long)node+100;
 
-  sge.length = metadata_size;
-  sge.lkey = node->server_metadata_mr->lkey;
-  sge.addr = (uintptr_t)node->server_metadata;
+  sge.length = sizeof(struct flush_notification);
+  sge.lkey = node->flush_notification_buff_mr->lkey;
+  sge.addr = (uintptr_t)node->flush_notification_buff;
 
   ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
   if (ret)
@@ -477,11 +477,12 @@ static int post_send_flush(struct benchmark_node *node) {
   send_wr.num_sge = 1;
   send_wr.opcode = IBV_WR_SEND;
   send_wr.send_flags = 0;
-  send_wr.wr_id = (unsigned long)node;
+  send_wr.wr_id = (unsigned long)node+200;
 
   sge.length = sizeof(struct flush_request);
   sge.lkey = node->flush_request_buff_mr->lkey;
   sge.addr = (uintptr_t)node->flush_request_buff;
+
   ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
   if (ret)
     printf("failed to post send flush_request: %d\n", ret);
@@ -803,18 +804,11 @@ static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
     return 0;
 
   for (done = 0; done < n; done += ret) {
-    ret = ibv_poll_cq(node->cq[index], 8, wc);
+    ret = ibv_poll_cq(node->cq[index], 1, wc);
     if (ret < 0) {
       printf("wsbenchmark: failed polling CQ: %d\n", ret);
       return ret;
     }
-    // if (ret > 0) {
-    // 	for (i = 0; i < ret; ++i) {
-    // 		printf("wsbenchmark: node %d wc wr_id: %lu len: %u s: %s f:
-    // %u\n", 			node->id, wc[i].wr_id, wc[i].byte_len,
-    // 			ibv_wc_status_str(wc[i].status), wc[i].wc_flags);
-    // 	}
-    // }
   }
   return 0;
 }
@@ -912,7 +906,7 @@ static int process_flush_request(struct benchmark_node *node) {
   return 0;
 }
 
-void* server_worker(void* index) {
+void *server_worker(void *index) {
   int ret;
   uint64_t start, end, current_latency;
   struct benchmark_node *node = &test.nodes[*(int *)index];
@@ -924,6 +918,11 @@ void* server_worker(void* index) {
       return NULL;
     }
     if (ret == 1 && wc.opcode == IBV_WC_RECV) {
+      ret = post_recv_flush(node); // post another recv
+      if (ret) {
+        printf("wsbenchmark: worker node_poll_n_cq error %d\n", ret);
+        return NULL;
+      }
       // persist
       if (use_pmem)
         pmem_persist(node->mem, message_size);
@@ -932,7 +931,11 @@ void* server_worker(void* index) {
         printf("wsbenchmark: worker post_send_notification error %d\n", ret);
         return NULL;
       }
-      post_recv_flush(node); // post another recv
+      ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
+      if (ret) {
+        printf("wsbenchmark: worker node_poll_n_cq error %d\n", ret);
+        return NULL;
+      }
     }
   }
   return NULL;
@@ -986,7 +989,6 @@ static int run_server(void) {
 
   printf("metadata sent\n");
 
-  // TODO: do it in separate threads
   // run server workers
   for (i = 0; i < connections; i++) {
     pthread_create(&test.threads[i], NULL, server_worker,
