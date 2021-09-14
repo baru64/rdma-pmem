@@ -45,7 +45,7 @@ def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: in
             RESULTS[mem_size] = {}
         if not program in RESULTS[mem_size]:
             RESULTS[mem_size][program] = {}
-        if program == "wsbenchmark_send_lat":
+        if program == "wsbenchmark":
             RESULTS[mem_size][program][threadnum] = {
                 "ops": int(result[0]),
                 "latency": int(result[1]),
@@ -103,7 +103,7 @@ def server(
     subprocess.run(args=args, stdout=sys.stdout, stderr=sys.stderr)
 
 
-benchmarks = ["wrbenchmark", "wsbenchmark_send_lat", "wibenchmark", "rbenchmark", "wbenchmark"]
+benchmarks = ["wrbenchmark", "wsbenchmark", "wibenchmark", "rbenchmark", "wbenchmark"]
 mem_sizes = ["256", "512", "1024", "2048", "4096", "8192", "12288", "16384", "20480", "24576", "32768", "65536"]
 # benchmarks = ["rwbenchmark"]
 
