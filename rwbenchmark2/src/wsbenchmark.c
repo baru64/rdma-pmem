@@ -42,6 +42,9 @@ struct statistics {
   uint64_t last_latency;
   uint64_t jitter;
   uint64_t elapsed_nanoseconds;
+  uint64_t send_latency;
+  uint64_t last_send_latency;
+  uint64_t send_jitter;
 };
 
 struct benchmark_node {
@@ -111,10 +114,12 @@ uint64_t get_time_ns() {
 
 static void print_stats(struct statistics *stats) {
   if (csv_output) {
-    printf("%lu;%lu;%lu;%f\n", stats->ops, stats->latency / stats->ops,
+    printf("%lu;%lu;%lu;%f;%lu;%lu\n", stats->ops, stats->latency / stats->ops,
            stats->jitter / (stats->ops - 1),
            (double)stats->ops * message_size / (1024 * 1024 * 1024) *
-               1000000000 / stats->elapsed_nanoseconds);
+               1000000000 / stats->elapsed_nanoseconds,
+           stats->send_latency / stats->ops,
+           stats->send_jitter / (stats->ops - 1));
   } else {
     puts("ops | avg lat [ns] | avg jitter [ns] | throughput [GB/s]");
     printf("%lu %lu %lu %f\n", stats->ops, stats->latency / stats->ops,
@@ -1010,7 +1015,7 @@ out:
 
 void *worker(void *index) {
   int ret;
-  uint64_t start, end, current_latency;
+  uint64_t start, end, current_latency, send_latency, send_start;
   struct benchmark_node *node = &test.nodes[*(int *)index];
 
   while (!begin) { /* wait */
@@ -1031,6 +1036,7 @@ void *worker(void *index) {
       printf("wsbenchmark: worker node_poll_n_cq error %d\n", ret);
       return NULL;
     }
+    send_start = get_time_ns();
     // post recv for flush notification
     ret = post_recv_notification(node);
     if (ret) {
@@ -1060,11 +1066,17 @@ void *worker(void *index) {
 
     node->stats->ops++;
     current_latency = end - start;
+    send_latency = end - send_start;
     node->stats->latency += current_latency;
+    node->stats->send_latency += send_latency;
     if (node->stats->last_latency != 0)
       node->stats->jitter +=
           labs((long)node->stats->last_latency - (long)current_latency);
-    node->stats->last_latency = end - start;
+    node->stats->last_latency = current_latency;
+    if (node->stats->last_send_latency != 0)
+      node->stats->send_jitter +=
+          labs((long)node->stats->last_send_latency - (long)send_latency);
+    node->stats->last_send_latency = send_latency;
   }
   node->stats->elapsed_nanoseconds =
       get_time_ns() - node->stats->elapsed_nanoseconds;
@@ -1128,6 +1140,8 @@ static int run_client(void) {
       total_stats.jitter += test.nodes[i].stats->jitter;
       total_stats.elapsed_nanoseconds +=
           test.nodes[i].stats->elapsed_nanoseconds;
+      total_stats.send_latency += test.nodes[i].stats->send_latency;
+      total_stats.send_jitter += test.nodes[i].stats->send_jitter;
     }
     // avg time
     total_stats.elapsed_nanoseconds = total_stats.elapsed_nanoseconds / connections;
