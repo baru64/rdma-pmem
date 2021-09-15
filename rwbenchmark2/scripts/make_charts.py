@@ -8,7 +8,7 @@ plt.rcParams.update({"font.size": 5})
 all_results = {}
 benchmark_names = [
     "wrbenchmark",
-    "wsbenchmark_send_lat",
+    "wsbenchmark",
     "wibenchmark",
     "rbenchmark",
     "wbenchmark",
@@ -45,7 +45,7 @@ threads = ["1", "2", "4", "8", "12"]
 with open("results.json", "r") as f:
     all_results: dict = json.load(f)
 
-# wsbenchmark_send_lat jitter
+# wsbenchmark jitter
 for thread in threads:
     fig, ax = plt.subplots()
     x = [int(m) for m in memsizes]
@@ -53,8 +53,8 @@ for thread in threads:
     y2 = []  # send_jitter
     for memsize in memsizes:
         results = all_results[memsize]
-        y1.append(results["wsbenchmark_send_lat"][thread].get("jitter"))
-        y2.append(results["wsbenchmark_send_lat"][thread].get("send_jitter"))
+        y1.append(results["wsbenchmark"][thread].get("jitter"))
+        y2.append(results["wsbenchmark"][thread].get("send_jitter"))
     ax.plot(x, y1, "-o", label="total jitter")
     ax.plot(x, y2, "-o", label="send jitter")
     for i, j in zip(x, y1):
@@ -76,8 +76,8 @@ for thread in threads:
     y2 = []  # send_latency
     for memsize in memsizes:
         results = all_results[memsize]
-        y1.append(results["wsbenchmark_send_lat"][thread].get("latency"))
-        y2.append(results["wsbenchmark_send_lat"][thread].get("send_latency"))
+        y1.append(results["wsbenchmark"][thread].get("latency"))
+        y2.append(results["wsbenchmark"][thread].get("send_latency"))
     ax.plot(x, y1, "-o", label="total latency")
     ax.plot(x, y2, "-o", label="send latency")
     for i, j in zip(x, y1):
