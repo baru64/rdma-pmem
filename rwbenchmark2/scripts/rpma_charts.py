@@ -1,6 +1,6 @@
 #!/bin/python3
-import sys
 import json
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -52,7 +52,7 @@ def get_results(filename: str) -> dict:
     results = {}
     with open(filename, "r") as f:
         data = f.readlines()
-        labels: list = None
+        labels: Optional[list] = None
         for line in data:
             if labels is None:
                 labels = line.split(",")
@@ -92,7 +92,7 @@ ax.set_xlabel("bytes")
 ax.set_ylabel("usec")
 ax.set_title("all benchmarks avg latency 1 thread")
 ax.set_xticks(x)
-ax.set_xticklabels(results["bs"])
+ax.set_xticklabels(results["bs"][:-2])
 ax.legend()
 ax.grid(axis="y")
 
@@ -124,7 +124,7 @@ ax.set_xlabel("bytes")
 ax.set_ylabel("usec")
 ax.set_title("all benchmarks avg latency 2 threads")
 ax.set_xticks(x)
-ax.set_xticklabels(results["bs"])
+ax.set_xticklabels(results["bs"][:-2])
 ax.legend()
 ax.grid(axis="y")
 
@@ -156,7 +156,7 @@ ax.set_xlabel("bytes")
 ax.set_ylabel("usec")
 ax.set_title("all benchmarks avg latency 4 threads")
 ax.set_xticks(x)
-ax.set_xticklabels(results["bs"])
+ax.set_xticklabels(results["bs"][:-2])
 ax.legend()
 ax.grid(axis="y")
 
@@ -188,7 +188,7 @@ ax.set_xlabel("bytes")
 ax.set_ylabel("usec")
 ax.set_title("all benchmarks avg latency 8 threads")
 ax.set_xticks(x)
-ax.set_xticklabels(results["bs"])
+ax.set_xticklabels(results["bs"][:-2])
 ax.legend()
 ax.grid(axis="y")
 
@@ -220,7 +220,7 @@ ax.set_xlabel("bytes")
 ax.set_ylabel("GB/s")
 ax.set_title("all benchmarks throughput 1 threads")
 ax.set_xticks(x)
-ax.set_xticklabels(results["bs"])
+ax.set_xticklabels(results["bs"][:-2])
 ax.legend()
 ax.grid(axis="y")
 
@@ -252,7 +252,7 @@ ax.set_xlabel("bytes")
 ax.set_ylabel("GB/s")
 ax.set_title("all benchmarks throughput 2 threads")
 ax.set_xticks(x)
-ax.set_xticklabels(results["bs"])
+ax.set_xticklabels(results["bs"][:-2])
 ax.legend()
 ax.grid(axis="y")
 
@@ -284,7 +284,7 @@ ax.set_xlabel("bytes")
 ax.set_ylabel("GB/s")
 ax.set_title("all benchmarks throughput 4 threads")
 ax.set_xticks(x)
-ax.set_xticklabels(results["bs"])
+ax.set_xticklabels(results["bs"][:-2])
 ax.legend()
 ax.grid(axis="y")
 
@@ -316,7 +316,7 @@ ax.set_xlabel("bytes")
 ax.set_ylabel("GB/s")
 ax.set_title("all benchmarks throughput 8 threads")
 ax.set_xticks(x)
-ax.set_xticklabels(results["bs"])
+ax.set_xticklabels(results["bs"][:-2])
 ax.legend()
 ax.grid(axis="y")
 
