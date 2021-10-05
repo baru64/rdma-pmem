@@ -17,7 +17,6 @@ link_libraries(ibverbs rdmacm pthread pmem)
 
 add_executable(wrbenchmark src/wrbenchmark.c src/common.c)
 add_executable(wsbenchmark src/wsbenchmark.c src/common.c)
-add_executable(wsbenchmark_send_lat src/wsbenchmark_send_lat.c src/common.c)
 add_executable(wibenchmark src/wibenchmark.c src/common.c)
 add_executable(wbenchmark src/wbenchmark.c src/common.c)
 add_executable(rbenchmark src/rbenchmark.c src/common.c)

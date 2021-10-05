@@ -82,8 +82,7 @@ struct benchmark {
 
 static struct benchmark test;
 static int connections = 1;
-static int message_size = 100;
-static int message_count = 1;
+static unsigned message_size = 100;
 static const char *port = "7471";
 static uint8_t set_tos = 0;
 static uint8_t tos;
@@ -147,17 +146,7 @@ static void print_metadata(struct benchmark_node *node) {
            node->server_metadata->key.local_key);
 }
 
-static void print_mem(struct benchmark_node *node) {
-  printf("MEM node %d > %.99s\n", node->id, (char *)node->mem);
-}
-
 static int create_message(struct benchmark_node *node) {
-  if (!message_size)
-    message_count = 0;
-
-  if (!message_count)
-    return 0;
-
   // buffer for rdma operations
   if (use_pmem) {
     node->mem = pmem + message_size*node->id;
@@ -292,7 +281,6 @@ static int init_node(struct benchmark_node *node) {
     goto out;
   }
 
-  // cqe = message_count ? message_count : 1;
   cqe = 1;
   node->cq[SEND_CQ_INDEX] =
       ibv_create_cq(node->cma_id->verbs, cqe, node, NULL, 0);
@@ -422,7 +410,7 @@ static int post_recv_notification(struct benchmark_node *node) {
 static int post_send_metadata(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -447,7 +435,7 @@ static int post_send_metadata(struct benchmark_node *node) {
 static int post_send_notification(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -472,7 +460,7 @@ static int post_send_notification(struct benchmark_node *node) {
 static int post_send_flush(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -497,7 +485,7 @@ static int post_send_flush(struct benchmark_node *node) {
 static int post_send_write(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -515,36 +503,6 @@ static int post_send_write(struct benchmark_node *node) {
   sge.addr = (uintptr_t)node->src_mem_mr->addr;
 
   // remote write destination
-  send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
-  send_wr.wr.rdma.remote_addr = node->server_metadata->address;
-
-  ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
-  if (ret)
-    printf("failed to post send metadata: %d\n", ret);
-  return ret;
-}
-
-static int post_send_read(struct benchmark_node *node) {
-  struct ibv_send_wr send_wr, *bad_send_wr;
-  struct ibv_sge sge;
-  int i, ret = 0;
-
-  if (!node->connected)
-    return 0;
-
-  send_wr.next = NULL;
-  send_wr.sg_list = &sge;
-  send_wr.num_sge = 1;
-  send_wr.opcode = IBV_WR_RDMA_READ;
-  send_wr.send_flags = 0;
-  send_wr.wr_id = (unsigned long)node;
-
-  // destination
-  sge.length = message_size;
-  sge.lkey = node->mr->lkey;
-  sge.addr = (uintptr_t)node->mem;
-
-  // remote read source
   send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
   send_wr.wr.rdma.remote_addr = node->server_metadata->address;
 
@@ -803,29 +761,12 @@ static int poll_one_wc(enum CQ_INDEX index) {
 static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
                           int n) {
   struct ibv_wc wc[8];
-  int done, i, ret;
+  int done, ret;
 
   if (!node->connected)
     return 0;
 
   for (done = 0; done < n; done += ret) {
-    ret = ibv_poll_cq(node->cq[index], 1, wc);
-    if (ret < 0) {
-      printf("wsbenchmark: failed polling CQ: %d\n", ret);
-      return ret;
-    }
-  }
-  return 0;
-}
-
-static int node_get_wc(struct benchmark_node *node, enum CQ_INDEX index,
-                          struct ibv_wc* wc) {
-  int done, i, ret;
-
-  if (!node->connected)
-    return 0;
-
-  for (done = 0; done < 1; done += ret) {
     ret = ibv_poll_cq(node->cq[index], 1, wc);
     if (ret < 0) {
       printf("wsbenchmark: failed polling CQ: %d\n", ret);
@@ -871,49 +812,8 @@ static int disconnect_events(void) {
   return ret;
 }
 
-// TODO change this to poll recv wc and flush
-static int process_flush_request(struct benchmark_node *node) {
-  struct ibv_cq *cq_ptr = NULL;
-  struct benchmark_node *node_ptr;
-  int ret = -1;
-  int max_wc = 1;
-  struct ibv_wc wc;
-  ret = ibv_get_cq_event(node->comp_channel, &cq_ptr, (void *)&node_ptr);
-  if (ret) {
-    printf("wsbenchmark: Failed to get next CQ event due to %d \n", -errno);
-    return -errno;
-  }
-  /* Request for more notifications. */
-  ret = ibv_req_notify_cq(cq_ptr, 0);
-  if (ret) {
-    printf("wsbenchmark: Failed to request further notifications %d \n",
-           -errno);
-    return -errno;
-  }
-
-  node_get_wc(node, RECV_CQ_INDEX, &wc);
-  // pmem persist
-  // TODO do something with the request
-  // received data is in node->flush_request_buff
-  if (use_pmem && wc.opcode == IBV_WC_RECV)
-    pmem_persist(node->mem, message_size);
-
-  ibv_ack_cq_events(cq_ptr, 1);
-
-  if (wc.opcode == IBV_WC_RECV) {
-    ret = post_recv_flush(node);
-    if (ret) {
-      printf("wsbenchmark: post_recv_flush error %d \n", -errno);
-      return -errno;
-    }
-  }
-
-  return 0;
-}
-
 void *server_worker(void *index) {
   int ret;
-  uint64_t start, end, current_latency;
   struct benchmark_node *node = &test.nodes[*(int *)index];
   while (true) {
     struct ibv_wc wc;
@@ -1110,43 +1010,43 @@ static int run_client(void) {
   if (ret)
     goto disc;
 
-  if (message_count) {
-    if (debug_log) printf("receiving metadata\n");
-    ret = poll_one_wc(RECV_CQ_INDEX);
-    if (ret)
-      goto disc;
+  if (debug_log)
+    printf("receiving metadata\n");
+  ret = poll_one_wc(RECV_CQ_INDEX);
+  if (ret)
+    goto disc;
 
-    for (i = 0; i < connections; i++)
-      print_metadata(&test.nodes[i]);
+  for (i = 0; i < connections; i++)
+    print_metadata(&test.nodes[i]);
 
-    if (debug_log) printf("metadata received\n");
-    // run workers
-    for (i = 0; i < connections; i++) {
-      pthread_create(&test.threads[i], NULL, worker, (void *)&test.nodes[i].id);
-    }
-    nanosleep(&prepare_time, NULL);
-    begin = true;
-    nanosleep(&sleep_time, NULL); // benchmark work
-    stop = true;
-    // join workers
-    for (i = 0; i < connections; i++) {
-      pthread_join(test.threads[i], NULL);
-    }
-    // total statistics
-    memset(&total_stats, 0, sizeof(struct statistics));
-    for (i = 0; i < connections; i++) {
-      total_stats.latency += test.nodes[i].stats->latency;
-      total_stats.ops += test.nodes[i].stats->ops;
-      total_stats.jitter += test.nodes[i].stats->jitter;
-      total_stats.elapsed_nanoseconds +=
-          test.nodes[i].stats->elapsed_nanoseconds;
-      total_stats.send_latency += test.nodes[i].stats->send_latency;
-      total_stats.send_jitter += test.nodes[i].stats->send_jitter;
-    }
-    // avg time
-    total_stats.elapsed_nanoseconds = total_stats.elapsed_nanoseconds / connections;
-    print_stats(&total_stats);
+  if (debug_log)
+    printf("metadata received\n");
+  // run workers
+  for (i = 0; i < connections; i++) {
+    pthread_create(&test.threads[i], NULL, worker, (void *)&test.nodes[i].id);
   }
+  nanosleep(&prepare_time, NULL);
+  begin = true;
+  nanosleep(&sleep_time, NULL); // benchmark work
+  stop = true;
+  // join workers
+  for (i = 0; i < connections; i++) {
+    pthread_join(test.threads[i], NULL);
+  }
+  // total statistics
+  memset(&total_stats, 0, sizeof(struct statistics));
+  for (i = 0; i < connections; i++) {
+    total_stats.latency += test.nodes[i].stats->latency;
+    total_stats.ops += test.nodes[i].stats->ops;
+    total_stats.jitter += test.nodes[i].stats->jitter;
+    total_stats.elapsed_nanoseconds += test.nodes[i].stats->elapsed_nanoseconds;
+    total_stats.send_latency += test.nodes[i].stats->send_latency;
+    total_stats.send_jitter += test.nodes[i].stats->send_jitter;
+  }
+  // avg time
+  total_stats.elapsed_nanoseconds =
+      total_stats.elapsed_nanoseconds / connections;
+  print_stats(&total_stats);
 
   ret = 0;
 disc:
@@ -1157,7 +1057,7 @@ disc:
   ret2 = disconnect_events();
   if (ret2)
     ret = ret2;
-out:
+
   return ret;
 }
 
@@ -1172,7 +1072,7 @@ int main(int argc, char **argv) {
   hints.ai_port_space = RDMA_PS_TCP;
 
   static struct option long_options[] = {{"pmem", required_argument, NULL, 0}};
-  while ((op = getopt_long(argc, argv, "s:b:f:P:c:C:S:t:p:a:v0", long_options,
+  while ((op = getopt_long(argc, argv, "s:b:f:P:c:S:t:p:a:v0", long_options,
                            &option_index)) != -1) {
     switch (op) {
     case 's':
@@ -1200,9 +1100,6 @@ int main(int argc, char **argv) {
       break;
     case 'c':
       connections = atoi(optarg);
-      break;
-    case 'C':
-      message_count = atoi(optarg);
       break;
     case 'S':
       message_size = atoi(optarg);
@@ -1234,7 +1131,6 @@ int main(int argc, char **argv) {
       printf("\t[-P port_space]\n");
       printf("\t    tcp or ib\n");
       printf("\t[-c connections]\n");
-      printf("\t[-C message_count]\n");
       printf("\t[-S message_size]\n");
       printf("\t[-t benchmark_time]\n");
       printf("\t[-p port_number]\n");

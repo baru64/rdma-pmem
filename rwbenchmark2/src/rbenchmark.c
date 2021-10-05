@@ -64,7 +64,7 @@ struct benchmark {
 
 static struct benchmark test;
 static int connections = 1;
-static int message_size = 100;
+static unsigned message_size = 100;
 static int message_count = 1;
 static const char *port = "7471";
 static uint8_t set_tos = 0;
@@ -125,11 +125,6 @@ static void print_metadata(struct benchmark_node *node) {
     printf("Server addr:len:key for node %d > %lu:%u:%u\n", node->id,
            node->server_metadata->address, node->server_metadata->length,
            node->server_metadata->key.local_key);
-}
-
-static void print_mem(struct benchmark_node *node) {
-  puts("print mem");
-  printf("MEM node %d > %.99s\n", node->id, (char *)node->mem);
 }
 
 static int create_message(struct benchmark_node *node) {
@@ -278,33 +273,6 @@ out:
   return ret;
 }
 
-static int post_recvs(struct benchmark_node *node) {
-  struct ibv_recv_wr recv_wr, *recv_failure;
-  struct ibv_sge sge;
-  int i, ret = 0;
-
-  if (!message_count)
-    return 0;
-
-  recv_wr.next = NULL;
-  recv_wr.sg_list = &sge;
-  recv_wr.num_sge = 1;
-  recv_wr.wr_id = (uintptr_t)node;
-
-  sge.length = message_size;
-  sge.lkey = node->mr->lkey;
-  sge.addr = (uintptr_t)node->mem;
-
-  for (i = 0; i < message_count && !ret; i++) {
-    ret = ibv_post_recv(node->cma_id->qp, &recv_wr, &recv_failure);
-    if (ret) {
-      printf("failed to post receives: %d\n", ret);
-      break;
-    }
-  }
-  return ret;
-}
-
 static int post_recv_metadata(struct benchmark_node *node) {
   struct ibv_recv_wr recv_wr, *recv_failure;
   struct ibv_sge sge;
@@ -327,37 +295,10 @@ static int post_recv_metadata(struct benchmark_node *node) {
   return ret;
 }
 
-static int post_sends(struct benchmark_node *node) {
-  struct ibv_send_wr send_wr, *bad_send_wr;
-  struct ibv_sge sge;
-  int i, ret = 0;
-
-  if (!node->connected || !message_count)
-    return 0;
-
-  send_wr.next = NULL;
-  send_wr.sg_list = &sge;
-  send_wr.num_sge = 1;
-  send_wr.opcode = IBV_WR_SEND;
-  send_wr.send_flags = 0;
-  send_wr.wr_id = (unsigned long)node;
-
-  sge.length = message_size;
-  sge.lkey = node->mr->lkey;
-  sge.addr = (uintptr_t)node->mem;
-
-  for (i = 0; i < message_count && !ret; i++) {
-    ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
-    if (ret)
-      printf("failed to post sends: %d\n", ret);
-  }
-  return ret;
-}
-
 static int post_send_metadata(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -379,40 +320,10 @@ static int post_send_metadata(struct benchmark_node *node) {
   return ret;
 }
 
-static int post_send_write(struct benchmark_node *node) {
-  struct ibv_send_wr send_wr, *bad_send_wr;
-  struct ibv_sge sge;
-  int i, ret = 0;
-
-  if (!node->connected)
-    return 0;
-
-  send_wr.next = NULL;
-  send_wr.sg_list = &sge;
-  send_wr.num_sge = 1;
-  send_wr.opcode = IBV_WR_RDMA_WRITE;
-  send_wr.send_flags = 0;
-  send_wr.wr_id = (unsigned long)node;
-
-  // source
-  sge.length = message_size;
-  sge.lkey = node->src_mem_mr->lkey;
-  sge.addr = (uintptr_t)node->src_mem_mr->addr;
-
-  // remote write destination
-  send_wr.wr.rdma.rkey = node->server_metadata->key.remote_key;
-  send_wr.wr.rdma.remote_addr = node->server_metadata->address;
-
-  ret = ibv_post_send(node->cma_id->qp, &send_wr, &bad_send_wr);
-  if (ret)
-    printf("failed to post send metadata: %d\n", ret);
-  return ret;
-}
-
 static int post_send_read(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -505,11 +416,6 @@ static int connect_handler(struct rdma_cm_id *cma_id) {
   ret = init_node(node);
   if (ret)
     goto err2;
-
-  // todo remove this
-  // ret = post_recvs(node);
-  // if (ret)
-  // 	goto err2;
 
   ret = rdma_accept(node->cma_id, NULL);
   if (ret) {
@@ -689,7 +595,7 @@ static int poll_one_wc(enum CQ_INDEX index) {
 static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
                           int n) {
   struct ibv_wc wc[8];
-  int done, i, ret;
+  int done, ret;
 
   if (!node->connected)
     return 0;
@@ -700,13 +606,6 @@ static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
       printf("rbenchmark: failed polling CQ: %d\n", ret);
       return ret;
     }
-    // if (ret > 0) {
-    // 	for (i = 0; i < ret; ++i) {
-    // 		printf("rbenchmark: node %d wc wr_id: %lu len: %u s: %s f:
-    // %u\n", 			node->id, wc[i].wr_id, wc[i].byte_len,
-    // 			ibv_wc_status_str(wc[i].status), wc[i].wc_flags);
-    // 	}
-    // }
   }
   return 0;
 }
@@ -916,7 +815,7 @@ disc:
   ret2 = disconnect_events();
   if (ret2)
     ret = ret2;
-out:
+
   return ret;
 }
 

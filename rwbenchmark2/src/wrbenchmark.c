@@ -64,7 +64,7 @@ struct benchmark {
 
 static struct benchmark test;
 static int connections = 1;
-static int message_size = 100;
+static unsigned message_size = 100;
 static const char *port = "7471";
 static uint8_t set_tos = 0;
 static uint8_t tos;
@@ -124,11 +124,6 @@ static void print_metadata(struct benchmark_node *node) {
     printf("Server addr:len:key for node %d > %lu:%u:%u\n", node->id,
            node->server_metadata->address, node->server_metadata->length,
            node->server_metadata->key.local_key);
-}
-
-static void print_mem(struct benchmark_node *node) {
-  puts("print mem");
-  printf("MEM node %d > %.99s\n", node->id, (char *)node->mem);
 }
 
 static int create_message(struct benchmark_node *node) {
@@ -296,7 +291,7 @@ static int post_recv_metadata(struct benchmark_node *node) {
 static int post_send_metadata(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -321,7 +316,7 @@ static int post_send_metadata(struct benchmark_node *node) {
 static int post_send_write(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -351,7 +346,7 @@ static int post_send_write(struct benchmark_node *node) {
 static int post_send_read(struct benchmark_node *node) {
   struct ibv_send_wr send_wr, *bad_send_wr;
   struct ibv_sge sge;
-  int i, ret = 0;
+  int ret = 0;
 
   if (!node->connected)
     return 0;
@@ -624,7 +619,7 @@ static int poll_one_wc(enum CQ_INDEX index) {
 static int node_poll_n_cq(struct benchmark_node *node, enum CQ_INDEX index,
                           int n) {
   struct ibv_wc wc[8];
-  int done, i, ret;
+  int done, ret;
 
   if (!node->connected)
     return 0;
@@ -852,7 +847,7 @@ disc:
   ret2 = disconnect_events();
   if (ret2)
     ret = ret2;
-out:
+
   return ret;
 }
 
