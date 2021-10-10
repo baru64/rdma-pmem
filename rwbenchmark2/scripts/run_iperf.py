@@ -46,6 +46,7 @@ def server(
         "ssh",
         node,
         f"iperf3",
+        "-s",
         "-B",
         serveraddr,
         "-f",
