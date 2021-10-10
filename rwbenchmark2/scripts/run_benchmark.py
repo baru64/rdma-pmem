@@ -6,10 +6,20 @@ import subprocess
 from multiprocessing import Process
 from time import sleep
 from pathlib import Path
+from time import ctime
+
+import psutil
 
 # build_path = "/home/vagrant/host/rwbenchmark2/build"
 build_path = "/home/inf126145/code/rdma-pmem/rwbenchmark2/build"
 benchmark_secs = str(60)
+
+
+def client_mon():
+    pass
+
+def server_mon():
+    pass
 
 
 def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: int):
@@ -111,6 +121,8 @@ if __name__ == "__main__":
     client_node = "pmem-4"
     server_node = "pmem-3"
     server_addr = "10.10.0.123"
+    measure_resources = True
+    server_mon_proc, client_mon_proc = None, None
 
     for mem_size in mem_sizes:
         for program in benchmarks:
@@ -123,6 +135,16 @@ if __name__ == "__main__":
                     target=server,
                     args=(program, server_node, server_addr, mem_size, threadnum),
                 )
+                if measure_resources:
+                    client_mon_proc = Process(
+                        target=client_mon,
+                        args=(program, client_node, server_addr, mem_size, threadnum),
+                    )
+                    server_mon_proc = Process(
+                        target=server_mon,
+                        args=(program, server_node, server_addr, mem_size, threadnum),
+                    )
+
 
                 serverproc.start()
                 sleep(0.1)

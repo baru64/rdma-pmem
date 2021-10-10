@@ -172,8 +172,6 @@ static int create_message(struct benchmark_node *node) {
     printf("failed to reg MR\n");
     goto err;
   }
-  // temporary
-  // sprintf(node->src_mem, "%d-testSTRING12345", node->id);
 
   return 0;
 err:
