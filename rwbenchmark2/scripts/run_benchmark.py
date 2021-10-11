@@ -30,6 +30,12 @@ def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: in
     args = [
         "ssh",
         node,
+        "time",
+        "-f",
+        f"{memsize},{threadnum},%P,%M,%t",
+        "-o",
+        f"/home/inf126145/time_{program}_client.csv",
+        "-a",
         f"{build_path}/{program}",
         "-s",
         serveraddr,
@@ -91,6 +97,12 @@ def server(
     args = [
         "ssh",
         node,
+        "time",
+        "-f",
+        f"{memsize},{threadnum},%P,%M,%t",
+        "-o",
+        f"/home/inf126145/time_{program}_server.csv",
+        "-a",
         f"{build_path}/{program}",
         "-b",
         serveraddr,
@@ -124,8 +136,6 @@ if __name__ == "__main__":
     client_node = "pmem-4"
     server_node = "pmem-3"
     server_addr = "10.10.0.123"
-    measure_resources = True
-    server_mon_proc, client_mon_proc = None, None
 
     for mem_size in mem_sizes:
         for program in benchmarks:
@@ -139,26 +149,9 @@ if __name__ == "__main__":
                     args=(program, server_node, server_addr, mem_size, threadnum),
                 )
 
-                if measure_resources:
-                    client_mon_proc = Process(
-                        target=monitor,
-                        args=(program, client_node, server_addr, mem_size, threadnum),
-                    )
-                    server_mon_proc = Process(
-                        target=monitor,
-                        args=(program, server_node, server_addr, mem_size, threadnum),
-                    )
-                    server_mon_proc.start()
-                    client_mon_proc.start()
-
-
                 serverproc.start()
                 sleep(0.1)
                 clientproc.start()
 
                 clientproc.join()
                 serverproc.kill()
-
-                if measure_resources:
-                    server_mon_proc.join()
-                    client_mon_proc.join()
