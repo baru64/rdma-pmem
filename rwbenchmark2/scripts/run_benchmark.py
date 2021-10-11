@@ -30,7 +30,7 @@ def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: in
     args = [
         "ssh",
         node,
-        "time",
+        "/usr/bin/time",
         "-f",
         f"{memsize},{threadnum},%P,%M,%t",
         "-o",
@@ -97,7 +97,7 @@ def server(
     args = [
         "ssh",
         node,
-        "time",
+        "/usr/bin/time",
         "-f",
         f"{memsize},{threadnum},%P,%M,%t",
         "-o",
