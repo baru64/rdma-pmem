@@ -1,4 +1,5 @@
 #!/bin/python3
+import sys
 from typing import Optional
 from time import ctime
 
@@ -23,8 +24,7 @@ def monitor_benchmark(program: str, label: str):
     while process is None:
         process = find_process_by_name(program)
 
-    # monitor thing here
-    with open(f"./info_{program}_{label}.txt", "w") as f:
+    with open(f"info_{program}_{label}.txt", "w") as f:
         f.write("t,cpu_percent,rss\n")
         while True:
             try:
@@ -34,3 +34,8 @@ def monitor_benchmark(program: str, label: str):
             except psutil.NoSuchProcess:
                 break
 
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("errror")
+    else:
+        monitor_benchmark(argv[1], argv[2])

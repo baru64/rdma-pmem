@@ -6,20 +6,23 @@ import subprocess
 from multiprocessing import Process
 from time import sleep
 from pathlib import Path
-from time import ctime
-
-import psutil
 
 # build_path = "/home/vagrant/host/rwbenchmark2/build"
 build_path = "/home/inf126145/code/rdma-pmem/rwbenchmark2/build"
 benchmark_secs = str(60)
 
 
-def client_mon():
-    pass
-
-def server_mon():
-    pass
+def monitor(node: str, program: str, label: str):
+    """ run monitor_benchmark """
+    args = [
+        "ssh",
+        node,
+        "python3",
+        "/home/inf126145/code/rdma-pmem/rwbenchmark2/scripts/monitor_benchmark.py",
+        program,
+        label
+    ]
+    subprocess.run(args=args, stdout=sys.stdout, stderr=sys.stderr)
 
 
 def client(program: str, node: str, serveraddr: str, memsize: str, threadnum: int):
@@ -135,15 +138,18 @@ if __name__ == "__main__":
                     target=server,
                     args=(program, server_node, server_addr, mem_size, threadnum),
                 )
+
                 if measure_resources:
                     client_mon_proc = Process(
-                        target=client_mon,
+                        target=monitor,
                         args=(program, client_node, server_addr, mem_size, threadnum),
                     )
                     server_mon_proc = Process(
-                        target=server_mon,
+                        target=monitor,
                         args=(program, server_node, server_addr, mem_size, threadnum),
                     )
+                    server_mon_proc.start()
+                    client_mon_proc.start()
 
 
                 serverproc.start()
@@ -152,3 +158,7 @@ if __name__ == "__main__":
 
                 clientproc.join()
                 serverproc.kill()
+
+                if measure_resources:
+                    server_mon_proc.join()
+                    client_mon_proc.join()
