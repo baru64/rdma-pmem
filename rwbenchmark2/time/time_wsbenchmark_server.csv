@@ -1,0 +1,144 @@
+Command terminated by signal 11
+256,1,99%,6792,0
+Command terminated by signal 11
+256,2,199%,6808,0
+Command terminated by signal 11
+256,4,399%,7224,0
+Command terminated by signal 11
+256,8,798%,7064,0
+Command terminated by signal 11
+256,12,1196%,7204,0
+Command terminated by signal 11
+256,16,1594%,7268,0
+Command terminated by signal 11
+512,1,99%,6772,0
+Command terminated by signal 11
+512,2,199%,7164,0
+Command terminated by signal 11
+512,4,398%,6924,0
+Command terminated by signal 11
+512,8,797%,6940,0
+Command terminated by signal 11
+512,12,1196%,7460,0
+Command terminated by signal 11
+512,16,1595%,7260,0
+Command terminated by signal 11
+1024,1,99%,7048,0
+Command terminated by signal 11
+1024,2,199%,6892,0
+Command terminated by signal 11
+1024,4,399%,7184,0
+Command terminated by signal 11
+1024,8,797%,7044,0
+Command terminated by signal 11
+1024,12,1196%,7352,0
+Command terminated by signal 11
+1024,16,1595%,7512,0
+Command terminated by signal 11
+2048,1,99%,7072,0
+Command terminated by signal 11
+2048,2,199%,6812,0
+Command terminated by signal 11
+2048,4,398%,6900,0
+Command terminated by signal 11
+2048,8,797%,7044,0
+Command terminated by signal 11
+2048,12,1196%,7176,0
+Command terminated by signal 11
+2048,16,1594%,7332,0
+Command terminated by signal 11
+4096,1,99%,6912,0
+Command terminated by signal 11
+4096,2,199%,6828,0
+Command terminated by signal 11
+4096,4,399%,6848,0
+Command terminated by signal 11
+4096,8,798%,7048,0
+Command terminated by signal 11
+4096,12,1196%,7132,0
+Command terminated by signal 11
+4096,16,1596%,7324,0
+Command terminated by signal 11
+8192,1,99%,6864,0
+Command terminated by signal 11
+8192,2,199%,6984,0
+Command terminated by signal 11
+8192,4,399%,7184,0
+Command terminated by signal 11
+8192,8,797%,7084,0
+Command terminated by signal 11
+8192,12,1196%,9460,0
+Command terminated by signal 11
+8192,16,1595%,7400,0
+Command terminated by signal 11
+12288,1,99%,6820,0
+Command terminated by signal 11
+12288,2,199%,6856,0
+Command terminated by signal 11
+12288,4,399%,6932,0
+Command terminated by signal 11
+12288,8,798%,7320,0
+Command terminated by signal 11
+12288,12,1196%,7584,0
+Command terminated by signal 11
+12288,16,1595%,7468,0
+Command terminated by signal 11
+16384,1,99%,6808,0
+Command terminated by signal 11
+16384,2,199%,7040,0
+Command terminated by signal 11
+16384,4,399%,7136,0
+Command terminated by signal 11
+16384,8,797%,7172,0
+Command terminated by signal 11
+16384,12,1196%,7592,0
+Command terminated by signal 11
+16384,16,1594%,7492,0
+Command terminated by signal 11
+20480,1,99%,7088,0
+Command terminated by signal 11
+20480,2,199%,7048,0
+Command terminated by signal 11
+20480,4,399%,6912,0
+Command terminated by signal 11
+20480,8,797%,7180,0
+Command terminated by signal 11
+20480,12,1196%,7376,0
+Command terminated by signal 11
+20480,16,1596%,7928,0
+Command terminated by signal 11
+24576,1,99%,6816,0
+Command terminated by signal 11
+24576,2,199%,6892,0
+Command terminated by signal 11
+24576,4,399%,6932,0
+Command terminated by signal 11
+24576,8,798%,7288,0
+Command terminated by signal 11
+24576,12,1196%,7692,0
+Command terminated by signal 11
+24576,16,1594%,7644,0
+Command terminated by signal 11
+32768,1,99%,6972,0
+Command terminated by signal 11
+32768,2,199%,7176,0
+Command terminated by signal 11
+32768,4,399%,6956,0
+Command terminated by signal 11
+32768,8,797%,7496,0
+Command terminated by signal 11
+32768,12,1196%,7688,0
+Command terminated by signal 11
+32768,16,1595%,7744,0
+Command terminated by signal 11
+65536,1,99%,6852,0
+Command terminated by signal 11
+65536,2,199%,6896,0
+Command terminated by signal 11
+65536,4,399%,7132,0
+Command terminated by signal 11
+65536,8,797%,7888,0
+Command terminated by signal 11
+65536,12,1197%,7932,0
+Command terminated by signal 11
+65536,16,1595%,8368,0

@@ -1,5 +1,2 @@
 issues:
 - fsdax not working on real pmem
-todo:
-- run_benchmarks and make_charts scripts
-- make rpma and librpmem benchmarks
