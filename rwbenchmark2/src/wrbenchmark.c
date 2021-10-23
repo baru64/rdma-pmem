@@ -232,7 +232,11 @@ static int init_node(struct benchmark_node *node) {
   }
 
   memset(&init_qp_attr, 0, sizeof init_qp_attr);
-  init_qp_attr.cap.max_send_wr = cqe;
+#if NO_ACK == 1
+  init_qp_attr.cap.max_send_wr = 2;
+#else
+  init_qp_attr.cap.max_send_wr = 1;
+#endif
   init_qp_attr.cap.max_recv_wr = cqe;
   init_qp_attr.cap.max_send_sge = 1;
   init_qp_attr.cap.max_recv_sge = 1;

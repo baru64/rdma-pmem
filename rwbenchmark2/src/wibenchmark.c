@@ -15,6 +15,8 @@
 #include "common.h"
 #include <rdma/rdma_cma.h>
 
+#define NO_ACK 1
+
 struct __attribute((packed)) rdma_buffer_attr {
   uint64_t address;
   uint32_t length;
@@ -261,12 +263,20 @@ static int init_node(struct benchmark_node *node) {
   }
 
   memset(&init_qp_attr, 0, sizeof init_qp_attr);
-  init_qp_attr.cap.max_send_wr = cqe;
+#if NO_ACK == 1
+  init_qp_attr.cap.max_send_wr = 2;
+#else
+  init_qp_attr.cap.max_send_wr = 1;
+#endif
   init_qp_attr.cap.max_recv_wr = cqe;
   init_qp_attr.cap.max_send_sge = 1;
   init_qp_attr.cap.max_recv_sge = 1;
   init_qp_attr.qp_context = node;
+#if NO_ACK == 1
+  init_qp_attr.sq_sig_all = 0;
+#else
   init_qp_attr.sq_sig_all = 1;
+#endif
   init_qp_attr.qp_type = IBV_QPT_RC;
   init_qp_attr.send_cq = node->cq[SEND_CQ_INDEX];
   init_qp_attr.recv_cq = node->cq[RECV_CQ_INDEX];
@@ -375,7 +385,11 @@ static int post_send_metadata(struct benchmark_node *node) {
   send_wr.sg_list = &sge;
   send_wr.num_sge = 1;
   send_wr.opcode = IBV_WR_SEND;
+#if NO_ACK == 1
+  send_wr.send_flags = IBV_SEND_SIGNALED;
+#else
   send_wr.send_flags = 0;
+#endif
   send_wr.wr_id = (unsigned long)node;
 
   sge.length = metadata_size;
@@ -433,7 +447,11 @@ static int post_send_notification(struct benchmark_node *node) {
   send_wr.sg_list = &sge;
   send_wr.num_sge = 1;
   send_wr.opcode = IBV_WR_SEND;
+#if NO_ACK == 1
+  send_wr.send_flags = IBV_SEND_SIGNALED;
+#else
   send_wr.send_flags = 0;
+#endif
   send_wr.wr_id = (unsigned long)node+100;
 
   sge.length = sizeof(struct flush_notification);
@@ -869,12 +887,14 @@ void *worker(void *index) {
       printf("wibenchmark: worker post_send_write_with_imm error %d\n", ret);
       return NULL;
     }
+#if NO_ACK == 0
     // wait for completion
     ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
     if (ret) {
       printf("wibenchmark: worker node_poll_n_cq error %d\n", ret);
       return NULL;
     }
+#endif
     send_start = get_time_ns();
     // TODO: handle notification status!
     // wait for RECV notification
