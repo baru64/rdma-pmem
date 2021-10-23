@@ -15,6 +15,8 @@
 #include "common.h"
 #include <rdma/rdma_cma.h>
 
+#define NO_ACK 1
+
 struct __attribute((packed)) rdma_buffer_attr {
   uint64_t address;
   uint32_t length;
@@ -235,7 +237,11 @@ static int init_node(struct benchmark_node *node) {
   init_qp_attr.cap.max_send_sge = 1;
   init_qp_attr.cap.max_recv_sge = 1;
   init_qp_attr.qp_context = node;
+#if NO_ACK == 1
+  init_qp_attr.sq_sig_all = 0;
+#else
   init_qp_attr.sq_sig_all = 1;
+#endif
   init_qp_attr.qp_type = IBV_QPT_RC;
   init_qp_attr.send_cq = node->cq[SEND_CQ_INDEX];
   init_qp_attr.recv_cq = node->cq[RECV_CQ_INDEX];
@@ -298,7 +304,11 @@ static int post_send_metadata(struct benchmark_node *node) {
   send_wr.sg_list = &sge;
   send_wr.num_sge = 1;
   send_wr.opcode = IBV_WR_SEND;
+#if NO_ACK == 1
+  send_wr.send_flags = IBV_SEND_SIGNALED;
+#else
   send_wr.send_flags = 0;
+#endif
   send_wr.wr_id = (unsigned long)node;
 
   sge.length = metadata_size;
@@ -353,7 +363,11 @@ static int post_send_read(struct benchmark_node *node) {
   send_wr.sg_list = &sge;
   send_wr.num_sge = 1;
   send_wr.opcode = IBV_WR_RDMA_READ;
+#if NO_ACK == 1
+  send_wr.send_flags = IBV_SEND_SIGNALED;
+#else
   send_wr.send_flags = 0;
+#endif
   send_wr.wr_id = (unsigned long)node;
 
   // destination
@@ -742,12 +756,14 @@ void *worker(void *index) {
       printf("wrbenchmark: worker post_send_write error %d\n", ret);
       return NULL;
     }
+#if NO_ACK == 0
     // wait for completion
     ret = node_poll_n_cq(node, SEND_CQ_INDEX, 1);
     if (ret) {
       printf("wrbenchmark: worker node_poll_n_cq error %d\n", ret);
       return NULL;
     }
+#endif
     // RDMA READ
     ret = post_send_read(node);
     if (ret) {
