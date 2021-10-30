@@ -28,7 +28,7 @@ rdma-core/
 rdma-examples/
 rdma-write-example/
 rwbenchmark/build
-rwbenchmark2/build
+pmrdmabenchmark/build
 */.ccls-cache
 pmdk/
 rpma/
